@@ -1,4 +1,4 @@
-var CACHE_NAME = 'doc-scanner-v1';
+var CACHE_NAME = 'doc-scanner-v2';
 var CACHE_URLS = [
   '/index.html',
   '/app.js',
@@ -7,8 +7,8 @@ var CACHE_URLS = [
 ];
 
 var CDN_URLS = [
-  'https://docs.opencv.org/4.9.0/opencv.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+  'https://cdn.bootcdn.net/ajax/libs/opencv.js/4.9.0/opencv.js',
+  'https://cdn.bootcdn.net/ajax/libs/jszip/3.10.1/jszip.min.js',
 ];
 
 self.addEventListener('install', function (event) {

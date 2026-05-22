@@ -9,12 +9,18 @@
     DUPLICATE_THRESHOLD: 0.05,
     COMPARE_SIZE: 100,
     MAX_RESOLUTION: 1920,
+    OPENCV_LOAD_TIMEOUT: 30000,
   };
 
   const STATE = { IDLE: 'idle', TURNING: 'turning', STABLE: 'stable', PAUSED: 'paused' };
 
+  const OPENCV_MIRRORS = [
+    'https://docs.opencv.org/4.9.0/opencv.js',
+    'https://cdn.bootcdn.net/ajax/libs/opencv.js/4.9.0/opencv.js',
+    'https://cdn.staticfile.net/opencv.js/4.9.0/opencv.js',
+  ];
+
   let currentState = STATE.IDLE;
-  let changeStart = 0;
   let stableStart = 0;
   let lastFrameData = null;
   let lastCapturedData = null;
@@ -23,6 +29,7 @@
   let running = false;
   let wakeLock = null;
   let cvReady = false;
+  let cvLoading = false;
   let lastProcessTime = 0;
 
   const video = document.getElementById('video');
@@ -31,11 +38,6 @@
 
   const processCanvas = document.createElement('canvas');
   const processCtx = processCanvas.getContext('2d', { willReadFrequently: true });
-
-  const compareCanvas = document.createElement('canvas');
-  compareCanvas.width = CONFIG.COMPARE_SIZE;
-  compareCanvas.height = CONFIG.COMPARE_SIZE;
-  const compareCtx = compareCanvas.getContext('2d', { willReadFrequently: true });
 
   const captureCanvas = document.createElement('canvas');
   const captureCtx = captureCanvas.getContext('2d');
@@ -61,23 +63,24 @@
   $btnClear.addEventListener('click', clearAll);
 
   async function startApp() {
+    document.getElementById('btnStart').disabled = true;
     $startScreen.style.display = 'none';
     $loading.classList.add('show');
 
     try {
       $loadingText.textContent = '正在启动摄像头...';
       await startCamera();
-      $loadingText.textContent = '正在加载识别引擎（首次较慢）...';
-      await waitForOpenCV();
-      cvReady = true;
-      $loadingText.textContent = '准备就绪';
-      await new Promise(r => setTimeout(r, 300));
       $loading.classList.remove('show');
+
       requestWakeLock();
       startDetectionLoop();
+
+      loadOpenCVAsync();
     } catch (err) {
       $loading.classList.remove('show');
       alert('启动失败: ' + err.message);
+      document.getElementById('btnStart').disabled = false;
+      $startScreen.style.display = '';
     }
   }
 
@@ -100,32 +103,102 @@
     });
   }
 
-  function waitForOpenCV() {
+  function loadOpenCVAsync() {
+    if (typeof cv !== 'undefined' && cv.Mat) {
+      cvReady = true;
+      updateStatusUI('idle', '智能矫正已就绪');
+      return;
+    }
+
+    if (cvLoading) return;
+    cvLoading = true;
+
+    loadScriptFromMirrors(OPENCV_MIRRORS)
+      .then(() => waitForOpenCVReady())
+      .then(() => {
+        cvReady = true;
+        cvLoading = false;
+        updateStatusUI('idle', '智能矫正已就绪');
+      })
+      .catch((err) => {
+        cvLoading = false;
+        console.warn('OpenCV 加载失败，将使用无矫正模式:', err);
+        updateStatusUI('idle', '基础模式（无自动矫正）');
+      });
+  }
+
+  function loadScriptFromMirrors(urls) {
+    return new Promise((resolve, reject) => {
+      let idx = 0;
+
+      function tryNext() {
+        if (idx >= urls.length) {
+          reject(new Error('所有镜像加载失败'));
+          return;
+        }
+
+        const url = urls[idx++];
+        const script = document.createElement('script');
+        script.src = url;
+        script.async = true;
+
+        const timer = setTimeout(() => {
+          cleanup();
+          tryNext();
+        }, CONFIG.OPENCV_LOAD_TIMEOUT);
+
+        function cleanup() {
+          clearTimeout(timer);
+          script.onload = null;
+          script.onerror = null;
+          if (script.parentNode) script.parentNode.removeChild(script);
+        }
+
+        script.onload = () => {
+          cleanup();
+          resolve();
+        };
+
+        script.onerror = () => {
+          cleanup();
+          tryNext();
+        };
+
+        document.head.appendChild(script);
+      }
+
+      tryNext();
+    });
+  }
+
+  function waitForOpenCVReady() {
     return new Promise((resolve, reject) => {
       if (typeof cv !== 'undefined' && cv.Mat) {
         resolve();
         return;
       }
-      let called = false;
-      const onReady = () => {
-        if (called) return;
-        called = true;
-        resolve();
-      };
-      if (typeof cv !== 'undefined') {
-        cv['onRuntimeInitialized'] = onReady;
-        if (cv.Mat) onReady();
-      } else {
-        const check = setInterval(() => {
-          if (typeof cv !== 'undefined' && cv.Mat) {
-            clearInterval(check);
-            onReady();
-          }
-        }, 200);
-        setTimeout(() => {
+
+      const timeout = setTimeout(() => {
+        clearInterval(check);
+        reject(new Error('OpenCV 初始化超时'));
+      }, 60000);
+
+      const check = setInterval(() => {
+        if (typeof cv !== 'undefined' && cv.Mat) {
           clearInterval(check);
-          if (!called) reject(new Error('OpenCV 加载超时'));
-        }, 60000);
+          clearTimeout(timeout);
+          resolve();
+        }
+      }, 200);
+
+      if (typeof cv !== 'undefined' && typeof cv.onRuntimeInitialized !== 'undefined') {
+        const origCallback = cv.onRuntimeInitialized;
+        cv.onRuntimeInitialized = function () {
+          if (origCallback) origCallback();
+          clearInterval(check);
+          clearTimeout(timeout);
+          resolve();
+        };
       }
     });
   }
@@ -195,12 +268,17 @@
         stableStart = 0;
       }
     } else {
-      currentState = STATE.IDLE;
-      updateStatusUI('idle', '等待翻页...');
+      if (!cvReady && !cvLoading) {
+        updateStatusUI('idle', '基础模式 · 等待翻页...');
+      } else if (cvLoading) {
+        updateStatusUI('idle', '矫正引擎加载中 · 等待翻页...');
+      } else {
+        updateStatusUI('idle', '等待翻页...');
+      }
     }
 
     if (cvReady && (currentState === STATE.IDLE || currentState === STATE.TURNING)) {
-      drawDocumentOverlay(currentFrame, vw, vh);
+      drawDocumentOverlay();
     }
   }
 
@@ -254,20 +332,12 @@
   }
 
   function isDuplicate(dataUrl) {
-    const img = new Image();
-    img.src = dataUrl;
-
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = CONFIG.COMPARE_SIZE;
     tempCanvas.height = CONFIG.COMPARE_SIZE;
     const tempCtx = tempCanvas.getContext('2d');
 
-    if (img.complete && img.naturalWidth > 0) {
-      tempCtx.drawImage(img, 0, 0, CONFIG.COMPARE_SIZE, CONFIG.COMPARE_SIZE);
-    } else {
-      tempCtx.drawImage(captureCanvas, 0, 0, CONFIG.COMPARE_SIZE, CONFIG.COMPARE_SIZE);
-    }
-
+    tempCtx.drawImage(captureCanvas, 0, 0, CONFIG.COMPARE_SIZE, CONFIG.COMPARE_SIZE);
     const current = tempCtx.getImageData(0, 0, CONFIG.COMPARE_SIZE, CONFIG.COMPARE_SIZE);
 
     if (!lastCapturedData) {
@@ -372,24 +442,35 @@
     $btnExport.textContent = '⏳ 打包中...';
 
     try {
-      const zip = new JSZip();
-      const folder = zip.folder('scanned_docs');
+      if (typeof JSZip === 'undefined') {
+        for (let i = 0; i < captures.length; i++) {
+          const a = document.createElement('a');
+          a.href = captures[i];
+          a.download = `page_${String(i + 1).padStart(3, '0')}.jpg`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        }
+      } else {
+        const zip = new JSZip();
+        const folder = zip.folder('scanned_docs');
 
-      for (let i = 0; i < captures.length; i++) {
-        const base64 = captures[i].split(',')[1];
-        folder.file(`page_${String(i + 1).padStart(3, '0')}.jpg`, base64, { base64: true });
+        for (let i = 0; i < captures.length; i++) {
+          const base64 = captures[i].split(',')[1];
+          folder.file(`page_${String(i + 1).padStart(3, '0')}.jpg`, base64, { base64: true });
+        }
+
+        const blob = await zip.generateAsync({ type: 'blob' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `扫描文档_${new Date().toISOString().slice(0, 10)}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
       }
-
-      const blob = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(blob);
-
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `扫描文档_${new Date().toISOString().slice(0, 10)}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
     } catch (e) {
       alert('导出失败: ' + e.message);
     }
@@ -409,7 +490,7 @@
     $thumbEmpty.style.display = '';
   }
 
-  function drawDocumentOverlay(frameData, w, h) {
+  function drawDocumentOverlay() {
     try {
       const corners = DocScanner.detectCorners(processCanvas);
       if (corners && corners.length === 4) {
