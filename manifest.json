@@ -2,7 +2,7 @@
   "name": "文档自动扫描",
   "short_name": "文档扫描",
   "description": "自动检测翻页并抓拍文档，智能透视矫正",
-  "start_url": "/index.html",
+  "start_url": "./index.html",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0f0f1a",
