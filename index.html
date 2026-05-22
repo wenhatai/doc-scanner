@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#1a1a2e">
+  <title>文档自动扫描</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%2316213e'/><text x='50' y='68' font-size='50' text-anchor='middle' fill='%2300d4ff'>📄</text></svg>">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+    :root {
+      --bg: #0f0f1a;
+      --card: #1a1a2e;
+      --accent: #00d4ff;
+      --accent-dim: #0091b3;
+      --danger: #ff4757;
+      --success: #2ed573;
+      --warning: #ffa502;
+      --text: #e8e8e8;
+      --text-dim: #888;
+      --radius: 12px;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      height: 100dvh;
+    }
+
+    /* ---- Start Screen ---- */
+    #startScreen {
+      position: fixed; inset: 0; z-index: 100;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: var(--bg);
+      gap: 24px;
+      padding: 32px;
+    }
+    #startScreen .logo {
+      font-size: 64px;
+      filter: drop-shadow(0 0 20px rgba(0,212,255,0.3));
+    }
+    #startScreen h1 {
+      font-size: 28px; font-weight: 700;
+      background: linear-gradient(135deg, var(--accent), #7c5cfc);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    #startScreen p {
+      color: var(--text-dim); text-align: center;
+      line-height: 1.6; max-width: 300px;
+      font-size: 14px;
+    }
+    .btn-start {
+      margin-top: 16px;
+      padding: 16px 48px;
+      font-size: 18px; font-weight: 600;
+      color: var(--bg);
+      background: linear-gradient(135deg, var(--accent), #7c5cfc);
+      border: none; border-radius: 50px;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s;
+      box-shadow: 0 4px 24px rgba(0,212,255,0.3);
+    }
+    .btn-start:active { transform: scale(0.96); }
+
+    /* ---- Loading Overlay ---- */
+    #loadingOverlay {
+      position: fixed; inset: 0; z-index: 90;
+      display: none; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: rgba(15,15,26,0.92);
+      gap: 16px;
+    }
+    #loadingOverlay.show { display: flex; }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid var(--card);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loadingText { color: var(--text-dim); font-size: 14px; }
+
+    /* ---- Camera View ---- */
+    #cameraView {
+      position: relative;
+      flex: 1;
+      overflow: hidden;
+      background: #000;
+    }
+    #video {
+      width: 100%; height: 100%;
+      object-fit: cover;
+    }
+    #overlayCanvas {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+    }
+
+    /* ---- Status Bar ---- */
+    #statusBar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      background: var(--card);
+      font-size: 13px;
+      min-height: 40px;
+    }
+    .status-indicator {
+      display: flex; align-items: center; gap: 6px;
+    }
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--text-dim);
+      transition: background 0.3s;
+    }
+    .status-dot.active { background: var(--success); animation: pulse 1.5s ease infinite; }
+    .status-dot.turning { background: var(--warning); animation: pulse 0.5s ease infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    #captureCount { color: var(--accent); font-weight: 600; }
+
+    /* ---- Control Bar ---- */
+    #controlBar {
+      display: flex;
+      gap: 10px;
+      padding: 12px 16px;
+      background: var(--card);
+      justify-content: center;
+      align-items: center;
+    }
+    .ctrl-btn {
+      display: flex; align-items: center; justify-content: center;
+      gap: 6px;
+      padding: 10px 18px;
+      border: none; border-radius: 50px;
+      font-size: 14px; font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.1s, opacity 0.1s;
+      color: var(--text);
+    }
+    .ctrl-btn:active { transform: scale(0.94); }
+    .ctrl-btn.primary {
+      background: var(--accent);
+      color: var(--bg);
+    }
+    .ctrl-btn.secondary {
+      background: rgba(255,255,255,0.1);
+    }
+    .ctrl-btn.danger {
+      background: var(--danger);
+      color: #fff;
+    }
+    .ctrl-btn:disabled {
+      opacity: 0.4; pointer-events: none;
+    }
+
+    /* ---- Thumbnail Bar ---- */
+    #thumbBar {
+      display: flex;
+      gap: 8px;
+      padding: 10px 16px;
+      background: var(--card);
+      overflow-x: auto;
+      min-height: 80px;
+      align-items: center;
+      border-top: 1px solid rgba(255,255,255,0.05);
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+    #thumbBar::-webkit-scrollbar { display: none; }
+
+    .thumb-item {
+      position: relative;
+      flex-shrink: 0;
+      width: 56px; height: 56px;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 2px solid transparent;
+      transition: border-color 0.2s;
+      cursor: pointer;
+    }
+    .thumb-item:active { border-color: var(--accent); }
+    .thumb-item img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+    }
+    .thumb-item .thumb-delete {
+      position: absolute; top: 2px; right: 2px;
+      width: 18px; height: 18px;
+      border-radius: 50%;
+      background: rgba(255,71,87,0.85);
+      color: #fff; font-size: 11px;
+      display: none; align-items: center; justify-content: center;
+      border: none; cursor: pointer;
+      line-height: 1;
+    }
+    .thumb-item:hover .thumb-delete,
+    .thumb-item:active .thumb-delete { display: flex; }
+
+    .thumb-empty {
+      color: var(--text-dim);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    /* ---- Flash Effect ---- */
+    #flashOverlay {
+      position: fixed; inset: 0;
+      background: white;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 80;
+      transition: opacity 0.1s;
+    }
+    #flashOverlay.flash {
+      opacity: 0.3;
+      transition: none;
+    }
+
+    /* ---- Responsive ---- */
+    @media (min-width: 768px) {
+      #app { max-width: 500px; margin: 0 auto; border-left: 1px solid rgba(255,255,255,0.05); border-right: 1px solid rgba(255,255,255,0.05); }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <!-- Start Screen -->
+    <div id="startScreen">
+      <div class="logo">📷</div>
+      <h1>文档自动扫描</h1>
+      <p>将手机固定在支架上，翻阅资料时自动抓拍每一页，智能裁剪矫正</p>
+      <button class="btn-start" id="btnStart">开始扫描</button>
+    </div>
+
+    <!-- Loading -->
+    <div id="loadingOverlay">
+      <div class="spinner"></div>
+      <div id="loadingText">正在加载识别引擎...</div>
+    </div>
+
+    <!-- Flash -->
+    <div id="flashOverlay"></div>
+
+    <!-- Camera -->
+    <div id="cameraView">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="overlayCanvas"></canvas>
+    </div>
+
+    <!-- Status -->
+    <div id="statusBar">
+      <div class="status-indicator">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">等待中</span>
+      </div>
+      <div>已抓拍 <span id="captureCount">0</span> 张</div>
+    </div>
+
+    <!-- Controls -->
+    <div id="controlBar">
+      <button class="ctrl-btn primary" id="btnManual">📷 手动</button>
+      <button class="ctrl-btn secondary" id="btnPause">⏸ 暂停</button>
+      <button class="ctrl-btn secondary" id="btnExport" disabled>📥 导出</button>
+      <button class="ctrl-btn danger" id="btnClear" disabled>🗑 清空</button>
+    </div>
+
+    <!-- Thumbnails -->
+    <div id="thumbBar">
+      <span class="thumb-empty" id="thumbEmpty">暂无抓拍，请将资料放在摄像头下方翻阅</span>
+    </div>
+  </div>
+
+  <script src="https://docs.opencv.org/4.9.0/opencv.js" async></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="scanner.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
