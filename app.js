@@ -3,14 +3,12 @@
 
   var CONFIG = {
     FRAME_INTERVAL: 100,
-    OVERLAY_INTERVAL: 500,   // overlay 检测降频，每 500ms 跑一次
+    OVERLAY_INTERVAL: 500,
     STABLE_DURATION: 800,
-    CHANGE_THRESHOLD: 0.15,
-    STABLE_THRESHOLD: 0.05,
+    CHANGE_THRESHOLD: 0.15,   // 翻页触发阈值（可调）
+    STABLE_THRESHOLD: 0.04,   // 稳定判定阈值（可调）
     DUPLICATE_THRESHOLD: 0.05,
     COMPARE_SIZE: 100,
-    CAPTURE_WIDTH: 1440,
-    CAPTURE_HEIGHT: 1920,
     OPENCV_LOAD_TIMEOUT: 30000,
   };
 
@@ -64,6 +62,8 @@
   $btnPause.addEventListener('click', togglePause);
   $btnExport.addEventListener('click', exportImages);
   $btnClear.addEventListener('click', clearAll);
+  document.getElementById('btnSettings').addEventListener('click', toggleSettings);
+  initSliders();
 
   // ── 启动 ──────────────────────────────────────────────
 
@@ -88,11 +88,11 @@
   }
 
   async function startCamera() {
+    // 不指定分辨率，让手机用摄像头原生最广视角
+    // 指定宽高会导致部分手机裁切/缩放画面，造成焦距变大
     var constraints = {
       video: {
         facingMode: { ideal: 'environment' },
-        width: { ideal: CONFIG.CAPTURE_WIDTH },
-        height: { ideal: CONFIG.CAPTURE_HEIGHT },
       },
       audio: false,
     };
@@ -545,6 +545,45 @@
     $btnClear.disabled = true;
     $thumbBar.querySelectorAll('.thumb-item').forEach(function (el) { el.remove(); });
     $thumbEmpty.style.display = '';
+  }
+
+  // ── 设置面板 ──────────────────────────────────────────
+
+  function toggleSettings() {
+    var panel = document.getElementById('settingsPanel');
+    var btn = document.getElementById('btnSettings');
+    var isOpen = panel.classList.contains('open');
+    panel.classList.toggle('open');
+    btn.style.background = isOpen ? '' : 'rgba(0,212,255,0.2)';
+  }
+
+  function initSliders() {
+    // 翻页触发灵敏度 → CHANGE_THRESHOLD
+    var sliderChange = document.getElementById('sliderChange');
+    var valChange = document.getElementById('valChange');
+    sliderChange.addEventListener('input', function () {
+      var v = parseInt(this.value);
+      CONFIG.CHANGE_THRESHOLD = v / 100;
+      valChange.textContent = v + '%';
+    });
+
+    // 稳定等待时长 → STABLE_DURATION
+    var sliderStable = document.getElementById('sliderStable');
+    var valStable = document.getElementById('valStable');
+    sliderStable.addEventListener('input', function () {
+      var v = parseInt(this.value);
+      CONFIG.STABLE_DURATION = v;
+      valStable.textContent = (v / 1000).toFixed(1) + 's';
+    });
+
+    // 去重阈值 → DUPLICATE_THRESHOLD
+    var sliderDup = document.getElementById('sliderDup');
+    var valDup = document.getElementById('valDup');
+    sliderDup.addEventListener('input', function () {
+      var v = parseInt(this.value);
+      CONFIG.DUPLICATE_THRESHOLD = v / 100;
+      valDup.textContent = v + '%';
+    });
   }
 
   // ── 文档边框 overlay ─────────────────────────────────

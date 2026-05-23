@@ -224,6 +224,58 @@
       white-space: nowrap;
     }
 
+    /* ---- Settings Panel ---- */
+    #settingsPanel {
+      display: none;
+      flex-direction: column;
+      gap: 14px;
+      padding: 14px 18px;
+      background: #12121f;
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    #settingsPanel.open { display: flex; }
+
+    .setting-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .setting-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .setting-label span:last-child {
+      color: var(--accent);
+      font-weight: 600;
+      min-width: 36px;
+      text-align: right;
+    }
+    input[type=range] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 4px;
+      border-radius: 2px;
+      background: rgba(255,255,255,0.12);
+      outline: none;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 20px; height: 20px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+      box-shadow: 0 0 6px rgba(0,212,255,0.5);
+    }
+    input[type=range]::-moz-range-thumb {
+      width: 20px; height: 20px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: none;
+      cursor: pointer;
+    }
+
     /* ---- Flash Effect ---- */
     #flashOverlay {
       position: fixed; inset: 0;
@@ -252,7 +304,7 @@
       <h1>文档自动扫描</h1>
       <p>将手机固定在支架上，翻阅资料时自动抓拍每一页，智能裁剪矫正</p>
       <button class="btn-start" id="btnStart">开始扫描</button>
-      <div style="color:#444;font-size:11px;margin-top:8px;">v1.3.0</div>
+      <div style="color:#444;font-size:11px;margin-top:8px;">v1.4.0</div>
     </div>
 
     <!-- Loading -->
@@ -286,8 +338,43 @@
     <div id="controlBar">
       <button class="ctrl-btn primary" id="btnManual">📷 手动</button>
       <button class="ctrl-btn secondary" id="btnPause">⏸ 暂停</button>
+      <button class="ctrl-btn secondary" id="btnSettings">⚙️</button>
       <button class="ctrl-btn secondary" id="btnExport" disabled>📥 导出</button>
-      <button class="ctrl-btn danger" id="btnClear" disabled>🗑 清空</button>
+      <button class="ctrl-btn danger" id="btnClear" disabled>🗑</button>
+    </div>
+
+    <!-- Settings Panel -->
+    <div id="settingsPanel">
+      <div class="setting-row">
+        <div class="setting-label">
+          <span>翻页触发灵敏度</span>
+          <span id="valChange">15%</span>
+        </div>
+        <input type="range" id="sliderChange" min="3" max="40" step="1" value="15">
+        <div class="setting-label" style="font-size:10px;margin-top:-2px;">
+          <span>不灵敏（减少误触）</span><span>灵敏（快速翻页）</span>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-label">
+          <span>稳定等待时长</span>
+          <span id="valStable">0.8s</span>
+        </div>
+        <input type="range" id="sliderStable" min="300" max="2000" step="100" value="800">
+        <div class="setting-label" style="font-size:10px;margin-top:-2px;">
+          <span>快（翻快页）</span><span>慢（确保清晰）</span>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-label">
+          <span>去重阈值</span>
+          <span id="valDup">5%</span>
+        </div>
+        <input type="range" id="sliderDup" min="1" max="20" step="1" value="5">
+        <div class="setting-label" style="font-size:10px;margin-top:-2px;">
+          <span>严格（少重复）</span><span>宽松（不漏拍）</span>
+        </div>
+      </div>
     </div>
 
     <!-- Thumbnails -->
