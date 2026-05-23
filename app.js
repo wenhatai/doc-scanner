@@ -115,6 +115,17 @@
       };
       video.onerror = reject;
     });
+
+    // 显示摄像头实际分辨率，方便调试
+    var track = stream.getVideoTracks()[0];
+    var settings = track.getSettings ? track.getSettings() : {};
+    var label = track.label || '';
+    var w = settings.width || video.videoWidth;
+    var h = settings.height || video.videoHeight;
+    var camInfo = document.getElementById('camInfo');
+    if (camInfo) {
+      camInfo.textContent = w + 'x' + h + (label ? '  ' + label.substring(0, 20) : '');
+    }
   }
 
   // ── OpenCV 异步加载 ───────────────────────────────────
@@ -332,27 +343,33 @@
   function cropToTargetRatio(src) {
     var sw = src.width;
     var sh = src.height;
-    var targetRatio = 3 / 4;               // 宽:高 = 3:4（竖向纸张）
+    // 3:4 竖向（宽:高），与 A4 纸比例接近
+    var targetW = 3, targetH = 4;
+    var targetRatio = targetW / targetH;
     var currentRatio = sw / sh;
-
-    if (Math.abs(currentRatio - targetRatio) < 0.05) return src;
 
     var cropW, cropH, cropX, cropY;
 
-    if (currentRatio > targetRatio) {
-      // 原图太宽，左右裁
+    if (Math.abs(currentRatio - targetRatio) < 0.04) {
+      // 已经接近 3:4，直接限制最大尺寸
+      cropW = sw; cropH = sh; cropX = 0; cropY = 0;
+    } else if (currentRatio > targetRatio) {
+      // 原图太宽（如 4:3、16:9、1:1），左右居中裁
       cropH = sh;
       cropW = Math.round(sh * targetRatio);
       cropX = Math.round((sw - cropW) / 2);
       cropY = 0;
     } else {
-      // 原图太高，上下裁
+      // 原图太高，上下居中裁
       cropW = sw;
       cropH = Math.round(sw / targetRatio);
+      // 确保裁剪高度不超过原图
+      cropH = Math.min(cropH, sh);
       cropX = 0;
       cropY = Math.round((sh - cropH) / 2);
     }
 
+    // 限制最大输出尺寸：高度不超过 2560
     var outH = Math.min(cropH, 2560);
     var outW = Math.round(outH * targetRatio);
 

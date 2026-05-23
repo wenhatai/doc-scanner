@@ -252,6 +252,7 @@
       <h1>文档自动扫描</h1>
       <p>将手机固定在支架上，翻阅资料时自动抓拍每一页，智能裁剪矫正</p>
       <button class="btn-start" id="btnStart">开始扫描</button>
+      <div style="color:#444;font-size:11px;margin-top:8px;">v1.3.0</div>
     </div>
 
     <!-- Loading -->
@@ -275,7 +276,10 @@
         <div class="status-dot" id="statusDot"></div>
         <span id="statusText">等待中</span>
       </div>
-      <div>已抓拍 <span id="captureCount">0</span> 张</div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;">
+        <div>已抓拍 <span id="captureCount">0</span> 张</div>
+        <div id="camInfo" style="font-size:10px;color:var(--text-dim);"></div>
+      </div>
     </div>
 
     <!-- Controls -->
