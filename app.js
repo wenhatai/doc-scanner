@@ -9,8 +9,8 @@
     DUPLICATE_THRESHOLD: 0.05,
     COMPARE_SIZE: 100,
     MAX_RESOLUTION: 1920,
-    CAPTURE_WIDTH: 1920,
-    CAPTURE_HEIGHT: 1080,
+    CAPTURE_WIDTH: 1440,
+    CAPTURE_HEIGHT: 1920,
     OPENCV_LOAD_TIMEOUT: 30000,
   };
 
@@ -383,25 +383,31 @@
     captureCanvas.height = h;
     captureCtx.putImageData(frameData, 0, 0);
 
-    let finalDataUrl;
+    var sourceCanvas = captureCanvas;
 
     if (cvReady) {
       try {
-        const correctedDataUrl = DocScanner.detectAndCorrect(captureCanvas);
+        var correctedDataUrl = DocScanner.detectAndCorrect(captureCanvas);
         if (correctedDataUrl) {
-          finalDataUrl = correctedDataUrl;
-        } else {
-          finalDataUrl = captureCanvas.toDataURL('image/jpeg', 0.92);
+          var tempImg = new Image();
+          tempImg.src = correctedDataUrl;
+          if (tempImg.complete && tempImg.naturalWidth > 0) {
+            sourceCanvas = document.createElement('canvas');
+            sourceCanvas.width = tempImg.naturalWidth;
+            sourceCanvas.height = tempImg.naturalHeight;
+            sourceCanvas.getContext('2d').drawImage(tempImg, 0, 0);
+          }
         }
       } catch (e) {
         console.warn('透视矫正失败，保存原图', e);
-        finalDataUrl = captureCanvas.toDataURL('image/jpeg', 0.92);
       }
-    } else {
-      finalDataUrl = captureCanvas.toDataURL('image/jpeg', 0.92);
     }
 
-    if (isDuplicate(finalDataUrl)) {
+    sourceCanvas = cropToTargetRatio(sourceCanvas);
+
+    var finalDataUrl = sourceCanvas.toDataURL('image/jpeg', 0.92);
+
+    if (isDuplicate(finalDataUrl, sourceCanvas)) {
       updateStatusUI('idle', '重复页面，跳过');
       return;
     }
@@ -411,13 +417,47 @@
     updateStatusUI('idle', '已抓拍！');
   }
 
-  function isDuplicate(dataUrl) {
-    const tempCanvas = document.createElement('canvas');
+  function cropToTargetRatio(sourceCanvas) {
+    var sw = sourceCanvas.width;
+    var sh = sourceCanvas.height;
+    var targetRatio = 3 / 4;
+
+    var currentRatio = sw / sh;
+    if (Math.abs(currentRatio - targetRatio) < 0.05) return sourceCanvas;
+
+    var cropW, cropH, cropX, cropY;
+
+    if (currentRatio > targetRatio) {
+      cropH = sh;
+      cropW = Math.round(sh * targetRatio);
+      cropX = Math.round((sw - cropW) / 2);
+      cropY = 0;
+    } else {
+      cropW = sw;
+      cropH = Math.round(sw / targetRatio);
+      cropX = 0;
+      cropY = Math.round((sh - cropH) / 2);
+    }
+
+    var outH = Math.min(cropH, 2560);
+    var outW = Math.round(outH * targetRatio);
+
+    var outCanvas = document.createElement('canvas');
+    outCanvas.width = outW;
+    outCanvas.height = outH;
+    outCanvas.getContext('2d').drawImage(sourceCanvas, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
+
+    return outCanvas;
+  }
+
+  function isDuplicate(dataUrl, sourceCanvas) {
+    var tempCanvas = document.createElement('canvas');
     tempCanvas.width = CONFIG.COMPARE_SIZE;
     tempCanvas.height = CONFIG.COMPARE_SIZE;
-    const tempCtx = tempCanvas.getContext('2d');
+    var tempCtx = tempCanvas.getContext('2d');
 
-    tempCtx.drawImage(captureCanvas, 0, 0, CONFIG.COMPARE_SIZE, CONFIG.COMPARE_SIZE);
+    var drawSrc = sourceCanvas || captureCanvas;
+    tempCtx.drawImage(drawSrc, 0, 0, CONFIG.COMPARE_SIZE, CONFIG.COMPARE_SIZE);
     const current = tempCtx.getImageData(0, 0, CONFIG.COMPARE_SIZE, CONFIG.COMPARE_SIZE);
 
     if (!lastCapturedData) {
