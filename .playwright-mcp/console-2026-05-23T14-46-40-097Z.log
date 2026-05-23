@@ -1,7 +1,0 @@
-[    6184ms] [INFO] [webpack-dev-server] Server started: Hot Module Replacement enabled, Live Reloading enabled, Progress disabled, Overlay enabled. @ webpack-internal:///../node_modules/.pnpm/webpack-dev-server@4.15.2_webpack@5.91.0_@swc+core@1.3.96_/node_modules/webpack-dev-server/client/modules/logger/index.js:484
-[    6186ms] [LOG] [HMR] Waiting for update signal from WDS... @ webpack-internal:///../node_modules/.pnpm/webpack@5.91.0_@swc+core@1.3.96/node_modules/webpack/hot/log.js:38
-[    6322ms] [INFO] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold @ http://localhost:10086/js/vendors-node_modules_taro_h5_prebundle_chunk-XOUURRXD_js.js:21748
-[    6394ms] [LOG] ⏹️ Stopped polling service @ webpack-internal:///./src/services/pollingService.ts:57
-[    6394ms] [LOG] App launched. @ webpack-internal:///./src/app.tsx:25
-[    6394ms] [LOG] [App] 非微信小程序环境，跳过论坛权限检测 @ webpack-internal:///./src/app.tsx:46
-[    6428ms] [WARNING] <meta name="apple-mobile-web-app-capable" content="yes"> is deprecated. Please include <meta name="mobile-web-app-capable" content="yes"> @ http://localhost:10086/pages/index/index:0
