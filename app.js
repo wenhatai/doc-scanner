@@ -1,7 +1,86 @@
 (function () {
   'use strict';
 
-  var VERSION = 'v1.8.0';
+  var VERSION = 'v1.9.0';
+
+  // ── 持久化存储 ─────────────────────────────────────────
+  // captures 用 IndexedDB（图片 blob 可能较大）
+  // 设置用 localStorage（小数据，同步读写方便）
+
+  var DB_NAME = 'doc-scanner-db';
+  var DB_STORE = 'captures';
+  var SETTINGS_KEY = 'doc-scanner-settings-v1';
+
+  var dbPromise = null;
+  function getDB() {
+    if (dbPromise) return dbPromise;
+    dbPromise = new Promise(function (resolve, reject) {
+      var req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = function () {
+        var db = req.result;
+        if (!db.objectStoreNames.contains(DB_STORE)) {
+          db.createObjectStore(DB_STORE, { keyPath: 'id', autoIncrement: true });
+        }
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+    return dbPromise;
+  }
+
+  async function dbAddCapture(dataUrl) {
+    var db = await getDB();
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction(DB_STORE, 'readwrite');
+      var req = tx.objectStore(DB_STORE).add({ data: dataUrl, ts: Date.now() });
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+  }
+
+  async function dbDeleteCapture(id) {
+    var db = await getDB();
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction(DB_STORE, 'readwrite');
+      var req = tx.objectStore(DB_STORE).delete(id);
+      req.onsuccess = function () { resolve(); };
+      req.onerror = function () { reject(req.error); };
+    });
+  }
+
+  async function dbClearCaptures() {
+    var db = await getDB();
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction(DB_STORE, 'readwrite');
+      var req = tx.objectStore(DB_STORE).clear();
+      req.onsuccess = function () { resolve(); };
+      req.onerror = function () { reject(req.error); };
+    });
+  }
+
+  async function dbLoadAllCaptures() {
+    try {
+      var db = await getDB();
+      return await new Promise(function (resolve, reject) {
+        var tx = db.transaction(DB_STORE, 'readonly');
+        var req = tx.objectStore(DB_STORE).getAll();
+        req.onsuccess = function () { resolve(req.result || []); };
+        req.onerror = function () { reject(req.error); };
+      });
+    } catch (e) { return []; }
+  }
+
+  function loadSettings() {
+    try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; }
+    catch (e) { return {}; }
+  }
+  function saveSettings(patch) {
+    try {
+      var cur = loadSettings();
+      Object.keys(patch).forEach(function (k) { cur[k] = patch[k]; });
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(cur));
+    } catch (e) {}
+  }
 
   var CONFIG = {
     FRAME_INTERVAL: 100,
@@ -88,12 +167,32 @@
   document.getElementById('btnDiagClose').addEventListener('click', closeDiagnostic);
   initSliders();
 
-  // 页面加载后先探测摄像头，再探测分辨率
+  // 页面加载后先加载已有 captures（恢复上次未导出的），再初始化摄像头/分辨率
   initStartScreen();
 
   async function initStartScreen() {
+    await restoreCaptures();
     await probeCameras();
     await probeResolutions();
+  }
+
+  async function restoreCaptures() {
+    var saved = await dbLoadAllCaptures();
+    if (!saved.length) return;
+    captures = saved.map(function (r) { return { id: r.id, data: r.data }; });
+    // 渲染缩略图
+    saved.forEach(function (r) { renderThumb({ id: r.id, data: r.data }); });
+    $captureCount.textContent = captures.length;
+    $btnExport.disabled = false;
+    $btnClear.disabled = false;
+    $thumbEmpty.style.display = 'none';
+    // 提示用户有上次的记录
+    var tip = document.createElement('div');
+    tip.style.cssText = 'background:rgba(46,213,115,0.15);color:#2ed573;padding:8px 14px;border-radius:8px;font-size:12px;margin-bottom:12px;max-width:340px;text-align:center;';
+    tip.textContent = '✓ 已恢复上次未导出的 ' + captures.length + ' 张图片';
+    var startScreen = document.getElementById('startScreen');
+    var firstChild = startScreen.querySelector('.logo');
+    startScreen.insertBefore(tip, firstChild);
   }
 
   // ── 摄像头列表检测 ────────────────────────────────────
@@ -141,15 +240,21 @@
       return;
     }
 
-    // 优先默认选中"广角"摄像头（label 含 wide/超广角 等）
-    var defaultIdx = 0;
-    for (var i = 0; i < backCams.length; i++) {
-      var lbl = (backCams[i].label || '').toLowerCase();
-      if (/ultra.?wide|wide|超广|广角/.test(lbl)) {
-        defaultIdx = i;
-        break;
+    // 优先：用户上次保存的 → 含 wide/广角 → 第一个
+    var savedDeviceId = (loadSettings() || {}).deviceId;
+    var defaultIdx = -1;
+    if (savedDeviceId) {
+      for (var k = 0; k < backCams.length; k++) {
+        if (backCams[k].deviceId === savedDeviceId) { defaultIdx = k; break; }
       }
     }
+    if (defaultIdx === -1) {
+      for (var i = 0; i < backCams.length; i++) {
+        var lbl = (backCams[i].label || '').toLowerCase();
+        if (/ultra.?wide|wide|超广|广角/.test(lbl)) { defaultIdx = i; break; }
+      }
+    }
+    if (defaultIdx === -1) defaultIdx = 0;
     selectedDeviceId = backCams[defaultIdx].deviceId;
 
     camLoading.style.display = 'none';
@@ -172,6 +277,7 @@
                       (tag ? '<span class="cam-tag">[' + tag + ' · 推荐]</span>' : '');
       div.addEventListener('click', function () {
         selectedDeviceId = cam.deviceId;
+        saveSettings({ deviceId: cam.deviceId });
         document.querySelectorAll('.cam-opt').forEach(function (x) { x.classList.remove('active'); });
         div.classList.add('active');
         // 切换摄像头后重新探测分辨率
@@ -249,13 +355,22 @@
       return;
     }
 
+    // 优先恢复上次选择的分辨率
+    var savedRes = (loadSettings() || {}).res; // {w,h}
+    var defaultResIdx = 0;
+    if (savedRes) {
+      for (var k = 0; k < list.length; k++) {
+        if (list[k].w === savedRes.w && list[k].h === savedRes.h) { defaultResIdx = k; break; }
+      }
+    }
+
     list.forEach(function (r, idx) {
       var lbl = document.createElement('label');
       lbl.className = 'res-opt';
 
       var input = document.createElement('input');
       input.type = 'radio'; input.name = 'res'; input.value = idx;
-      if (idx === 0) { input.checked = true; selectedRes = r; }
+      if (idx === defaultResIdx) { input.checked = true; selectedRes = r; }
 
       var span = document.createElement('span');
       span.innerHTML = r.w + '×' + r.h + '<small>' + r.tag + '</small>';
@@ -264,6 +379,7 @@
         if (this.checked) {
           selectedRes = r;
           resHint.textContent = r.w + '×' + r.h + ' ' + r.tag;
+          saveSettings({ res: { w: r.w, h: r.h } });
         }
       });
 
@@ -272,7 +388,7 @@
       resGrid.appendChild(lbl);
     });
 
-    var firstRes = list[0];
+    var firstRes = list[defaultResIdx];
     resHint.textContent = (camLabel ? camLabel + '  ' : '') +
                           firstRes.w + '×' + firstRes.h + ' ' + firstRes.tag;
     btnStart.disabled = false;
@@ -674,28 +790,36 @@
 
   // ── 缩略图 ────────────────────────────────────────────
 
-  function addCapture(dataUrl) {
-    captures.push(dataUrl);
+  async function addCapture(dataUrl) {
+    var id;
+    try { id = await dbAddCapture(dataUrl); }
+    catch (e) { id = Date.now() + Math.random(); /* fallback: 仍内存中保留 */ }
+    var entry = { id: id, data: dataUrl };
+    captures.push(entry);
+    renderThumb(entry);
     $captureCount.textContent = captures.length;
     $btnExport.disabled = false;
     $btnClear.disabled = false;
     $thumbEmpty.style.display = 'none';
+  }
 
+  function renderThumb(entry) {
     var item = document.createElement('div');
     item.className = 'thumb-item';
+    item.dataset.captureId = entry.id;
 
     var img = document.createElement('img');
-    img.src = dataUrl;
+    img.src = entry.data;
     item.appendChild(img);
 
     var del = document.createElement('button');
     del.className = 'thumb-del';
     del.textContent = '✕';
-    del.addEventListener('click', function (e) {
+    del.addEventListener('click', async function (e) {
       e.stopPropagation();
-      var items = $thumbBar.querySelectorAll('.thumb-item');
-      var domIdx = Array.prototype.indexOf.call(items, item);
-      if (domIdx !== -1) captures.splice(domIdx, 1);
+      var idx = captures.findIndex(function (c) { return String(c.id) === String(entry.id); });
+      if (idx !== -1) captures.splice(idx, 1);
+      try { await dbDeleteCapture(entry.id); } catch (_) {}
       item.remove();
       $captureCount.textContent = captures.length;
       if (captures.length === 0) {
@@ -748,17 +872,37 @@
   }
 
   function initSliders() {
+    var s = loadSettings();
+
     var sc = document.getElementById('sliderChange');
     var vc = document.getElementById('valChange');
-    sc.addEventListener('input', function () { CONFIG.CHANGE_THRESHOLD = this.value / 100; vc.textContent = this.value + '%'; });
+    if (typeof s.changePct === 'number') { sc.value = s.changePct; CONFIG.CHANGE_THRESHOLD = s.changePct / 100; }
+    vc.textContent = sc.value + '%';
+    sc.addEventListener('input', function () {
+      CONFIG.CHANGE_THRESHOLD = this.value / 100;
+      vc.textContent = this.value + '%';
+      saveSettings({ changePct: +this.value });
+    });
 
     var ss = document.getElementById('sliderStable');
     var vs = document.getElementById('valStable');
-    ss.addEventListener('input', function () { CONFIG.STABLE_DURATION = +this.value; vs.textContent = (+this.value / 1000).toFixed(1) + 's'; });
+    if (typeof s.stableMs === 'number') { ss.value = s.stableMs; CONFIG.STABLE_DURATION = s.stableMs; }
+    vs.textContent = (+ss.value / 1000).toFixed(1) + 's';
+    ss.addEventListener('input', function () {
+      CONFIG.STABLE_DURATION = +this.value;
+      vs.textContent = (+this.value / 1000).toFixed(1) + 's';
+      saveSettings({ stableMs: +this.value });
+    });
 
     var sd = document.getElementById('sliderDup');
     var vd = document.getElementById('valDup');
-    sd.addEventListener('input', function () { CONFIG.DUPLICATE_THRESHOLD = this.value / 100; vd.textContent = this.value + '%'; });
+    if (typeof s.dupPct === 'number') { sd.value = s.dupPct; CONFIG.DUPLICATE_THRESHOLD = s.dupPct / 100; }
+    vd.textContent = sd.value + '%';
+    sd.addEventListener('input', function () {
+      CONFIG.DUPLICATE_THRESHOLD = this.value / 100;
+      vd.textContent = this.value + '%';
+      saveSettings({ dupPct: +this.value });
+    });
   }
 
   // ── 导出 ──────────────────────────────────────────────
@@ -771,8 +915,8 @@
       if (typeof JSZip !== 'undefined') {
         var zip = new JSZip();
         var folder = zip.folder('scanned_docs');
-        captures.forEach(function (d, i) {
-          folder.file('page_' + String(i + 1).padStart(3, '0') + '.jpg', d.split(',')[1], { base64: true });
+        captures.forEach(function (c, i) {
+          folder.file('page_' + String(i + 1).padStart(3, '0') + '.jpg', c.data.split(',')[1], { base64: true });
         });
         var blob = await zip.generateAsync({ type: 'blob' });
         var url = URL.createObjectURL(blob);
@@ -782,9 +926,9 @@
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
         URL.revokeObjectURL(url);
       } else {
-        captures.forEach(function (d, i) {
+        captures.forEach(function (c, i) {
           var a = document.createElement('a');
-          a.href = d; a.download = 'page_' + String(i + 1).padStart(3, '0') + '.jpg';
+          a.href = c.data; a.download = 'page_' + String(i + 1).padStart(3, '0') + '.jpg';
           document.body.appendChild(a); a.click(); document.body.removeChild(a);
         });
       }
@@ -793,9 +937,10 @@
     $btnExport.textContent = '📥 导出';
   }
 
-  function clearAll() {
+  async function clearAll() {
     if (!confirm('确定清空所有抓拍？')) return;
     captures = []; lastCapturedData = null;
+    try { await dbClearCaptures(); } catch (_) {}
     $captureCount.textContent = '0';
     $btnExport.disabled = true; $btnClear.disabled = true;
     $thumbBar.querySelectorAll('.thumb-item').forEach(function (el) { el.remove(); });
@@ -828,8 +973,28 @@
 
   // ── SW 更新提示 ───────────────────────────────────────
 
-  document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible' && running) requestWakeLock();
+  document.addEventListener('visibilitychange', async function () {
+    if (document.visibilityState !== 'visible' || !running) return;
+    requestWakeLock();
+    // 检查摄像头流是否还活着，若已断则重启
+    var needRestart = false;
+    if (!currentStream) {
+      needRestart = true;
+    } else {
+      var tracks = currentStream.getVideoTracks ? currentStream.getVideoTracks() : [];
+      if (tracks.length === 0 || tracks[0].readyState === 'ended') {
+        needRestart = true;
+      }
+    }
+    if (needRestart) {
+      try {
+        updateStatusUI('idle', '恢复摄像头...');
+        await startCamera();
+        updateStatusUI('idle', '已恢复');
+      } catch (e) {
+        updateStatusUI('idle', '摄像头恢复失败：' + e.message);
+      }
+    }
   });
 
   if ('serviceWorker' in navigator) {
