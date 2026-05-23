@@ -1,68 +1,71 @@
 (function () {
   'use strict';
 
-  const CONFIG = {
+  var CONFIG = {
     FRAME_INTERVAL: 100,
+    OVERLAY_INTERVAL: 500,   // overlay 检测降频，每 500ms 跑一次
     STABLE_DURATION: 800,
     CHANGE_THRESHOLD: 0.15,
     STABLE_THRESHOLD: 0.05,
     DUPLICATE_THRESHOLD: 0.05,
     COMPARE_SIZE: 100,
-    MAX_RESOLUTION: 1920,
     CAPTURE_WIDTH: 1440,
     CAPTURE_HEIGHT: 1920,
     OPENCV_LOAD_TIMEOUT: 30000,
   };
 
-  const STATE = { IDLE: 'idle', TURNING: 'turning', STABLE: 'stable', PAUSED: 'paused' };
+  var STATE = { IDLE: 'idle', TURNING: 'turning', PAUSED: 'paused' };
 
-  const OPENCV_MIRRORS = [
+  var OPENCV_MIRRORS = [
     'https://docs.opencv.org/4.9.0/opencv.js',
     'https://cdn.bootcdn.net/ajax/libs/opencv.js/4.9.0/opencv.js',
     'https://cdn.staticfile.net/opencv.js/4.9.0/opencv.js',
   ];
 
-  let currentState = STATE.IDLE;
-  let stableStart = 0;
-  let lastFrameData = null;
-  let lastCapturedData = null;
-  let captures = [];
-  let paused = false;
-  let running = false;
-  let wakeLock = null;
-  let cvReady = false;
-  let cvLoading = false;
-  let lastProcessTime = 0;
+  var currentState = STATE.IDLE;
+  var stableStart = 0;
+  var lastFrameData = null;
+  var lastCapturedData = null;
+  var captures = [];
+  var paused = false;
+  var running = false;
+  var wakeLock = null;
+  var cvReady = false;
+  var cvLoading = false;
+  var lastProcessTime = 0;
+  var lastOverlayTime = 0;
 
-  const video = document.getElementById('video');
-  const overlayCanvas = document.getElementById('overlayCanvas');
-  const overlayCtx = overlayCanvas.getContext('2d', { willReadFrequently: true });
+  var video = document.getElementById('video');
+  var overlayCanvas = document.getElementById('overlayCanvas');
+  var overlayCtx = overlayCanvas.getContext('2d', { willReadFrequently: true });
 
-  const processCanvas = document.createElement('canvas');
-  const processCtx = processCanvas.getContext('2d', { willReadFrequently: true });
+  var processCanvas = document.createElement('canvas');
+  var processCtx = processCanvas.getContext('2d', { willReadFrequently: true });
 
-  const captureCanvas = document.createElement('canvas');
-  const captureCtx = captureCanvas.getContext('2d');
+  var captureCanvas = document.createElement('canvas');
+  var captureCtx = captureCanvas.getContext('2d');
 
-  const $startScreen = document.getElementById('startScreen');
-  const $loading = document.getElementById('loadingOverlay');
-  const $loadingText = document.getElementById('loadingText');
-  const $flash = document.getElementById('flashOverlay');
-  const $statusDot = document.getElementById('statusDot');
-  const $statusText = document.getElementById('statusText');
-  const $captureCount = document.getElementById('captureCount');
-  const $btnManual = document.getElementById('btnManual');
-  const $btnPause = document.getElementById('btnPause');
-  const $btnExport = document.getElementById('btnExport');
-  const $btnClear = document.getElementById('btnClear');
-  const $thumbBar = document.getElementById('thumbBar');
-  const $thumbEmpty = document.getElementById('thumbEmpty');
+  var $startScreen = document.getElementById('startScreen');
+  var $loading = document.getElementById('loadingOverlay');
+  var $loadingText = document.getElementById('loadingText');
+  var $flash = document.getElementById('flashOverlay');
+  var $statusDot = document.getElementById('statusDot');
+  var $statusText = document.getElementById('statusText');
+  var $captureCount = document.getElementById('captureCount');
+  var $btnManual = document.getElementById('btnManual');
+  var $btnPause = document.getElementById('btnPause');
+  var $btnExport = document.getElementById('btnExport');
+  var $btnClear = document.getElementById('btnClear');
+  var $thumbBar = document.getElementById('thumbBar');
+  var $thumbEmpty = document.getElementById('thumbEmpty');
 
   document.getElementById('btnStart').addEventListener('click', startApp);
   $btnManual.addEventListener('click', manualCapture);
   $btnPause.addEventListener('click', togglePause);
   $btnExport.addEventListener('click', exportImages);
   $btnClear.addEventListener('click', clearAll);
+
+  // ── 启动 ──────────────────────────────────────────────
 
   async function startApp() {
     document.getElementById('btnStart').disabled = true;
@@ -73,14 +76,12 @@
       $loadingText.textContent = '正在启动摄像头...';
       await startCamera();
       $loading.classList.remove('show');
-
       requestWakeLock();
       startDetectionLoop();
-
       loadOpenCVAsync();
     } catch (err) {
       $loading.classList.remove('show');
-      alert('启动失败: ' + err.message);
+      alert('摄像头启动失败: ' + err.message);
       document.getElementById('btnStart').disabled = false;
       $startScreen.style.display = '';
     }
@@ -98,79 +99,12 @@
 
     var stream = await navigator.mediaDevices.getUserMedia(constraints);
 
+    // 开启持续对焦（不支持则静默忽略）
     try {
       var track = stream.getVideoTracks()[0];
-      var capabilities = track.getCapabilities ? track.getCapabilities() : {};
-      var settings = {};
-      if (capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
-        settings.focusMode = 'continuous';
-      }
-      if (Object.keys(settings).length > 0) {
-        await track.applyConstraints({ advanced: [settings] });
-      }
-    } catch (_) {}
-
-    video.srcObject = stream;
-    await new Promise((resolve, reject) => {
-      video.onloadedmetadata = () => {
-        video.play().then(resolve).catch(reject);
-      };
-      video.onerror = reject;
-    });
-  }
-      }
-
-      if (!deviceId && backDevices.length > 0) {
-        var testStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
-          audio: false,
-        });
-        var mainTrack = testStream.getVideoTracks()[0];
-        var mainSettings = mainTrack.getSettings();
-        var mainDeviceId = mainSettings.deviceId;
-        testStream.getTracks().forEach(function (t) { t.stop(); });
-
-        for (var i = 0; i < backDevices.length; i++) {
-          if (backDevices[i].deviceId !== mainDeviceId) {
-            deviceId = backDevices[i].deviceId;
-            break;
-          }
-        }
-      }
-    }
-
-    var constraints;
-    if (deviceId) {
-      constraints = {
-        video: {
-          deviceId: { exact: deviceId },
-          width: { ideal: CONFIG.CAPTURE_WIDTH },
-          height: { ideal: CONFIG.CAPTURE_HEIGHT },
-        },
-        audio: false,
-      };
-    } else {
-      constraints = {
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: CONFIG.CAPTURE_WIDTH },
-          height: { ideal: CONFIG.CAPTURE_HEIGHT },
-        },
-        audio: false,
-      };
-    }
-
-    var stream = await navigator.mediaDevices.getUserMedia(constraints);
-
-    try {
-      var track = stream.getVideoTracks()[0];
-      var capabilities = track.getCapabilities ? track.getCapabilities() : {};
-      var settings = {};
-      if (capabilities.focusMode && capabilities.focusMode.indexOf('continuous') !== -1) {
-        settings.focusMode = 'continuous';
-      }
-      if (Object.keys(settings).length > 0) {
-        await track.applyConstraints({ advanced: [settings] });
+      var caps = track.getCapabilities ? track.getCapabilities() : {};
+      if (caps.focusMode && caps.focusMode.indexOf('continuous') !== -1) {
+        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
       }
     } catch (_) {}
 
@@ -183,49 +117,44 @@
     });
   }
 
+  // ── OpenCV 异步加载 ───────────────────────────────────
+
   function loadOpenCVAsync() {
     if (typeof cv !== 'undefined' && cv.Mat) {
       cvReady = true;
       updateStatusUI('idle', '智能矫正已就绪');
       return;
     }
-
     if (cvLoading) return;
     cvLoading = true;
 
     loadScriptFromMirrors(OPENCV_MIRRORS)
-      .then(() => waitForOpenCVReady())
-      .then(() => {
+      .then(function () { return waitForOpenCVReady(); })
+      .then(function () {
         cvReady = true;
         cvLoading = false;
         updateStatusUI('idle', '智能矫正已就绪');
       })
-      .catch((err) => {
+      .catch(function (err) {
         cvLoading = false;
-        console.warn('OpenCV 加载失败，将使用无矫正模式:', err);
+        console.warn('OpenCV 加载失败，使用无矫正模式:', err);
         updateStatusUI('idle', '基础模式（无自动矫正）');
       });
   }
 
   function loadScriptFromMirrors(urls) {
-    return new Promise((resolve, reject) => {
-      let idx = 0;
+    return new Promise(function (resolve, reject) {
+      var idx = 0;
 
       function tryNext() {
-        if (idx >= urls.length) {
-          reject(new Error('所有镜像加载失败'));
-          return;
-        }
+        if (idx >= urls.length) { reject(new Error('所有镜像均加载失败')); return; }
 
-        const url = urls[idx++];
-        const script = document.createElement('script');
+        var url = urls[idx++];
+        var script = document.createElement('script');
         script.src = url;
         script.async = true;
 
-        const timer = setTimeout(() => {
-          cleanup();
-          tryNext();
-        }, CONFIG.OPENCV_LOAD_TIMEOUT);
+        var timer = setTimeout(function () { cleanup(); tryNext(); }, CONFIG.OPENCV_LOAD_TIMEOUT);
 
         function cleanup() {
           clearTimeout(timer);
@@ -234,16 +163,8 @@
           if (script.parentNode) script.parentNode.removeChild(script);
         }
 
-        script.onload = () => {
-          cleanup();
-          resolve();
-        };
-
-        script.onerror = () => {
-          cleanup();
-          tryNext();
-        };
-
+        script.onload = function () { cleanup(); resolve(); };
+        script.onerror = function () { cleanup(); tryNext(); };
         document.head.appendChild(script);
       }
 
@@ -252,45 +173,43 @@
   }
 
   function waitForOpenCVReady() {
-    return new Promise((resolve, reject) => {
-      if (typeof cv !== 'undefined' && cv.Mat) {
-        resolve();
-        return;
-      }
+    return new Promise(function (resolve, reject) {
+      if (typeof cv !== 'undefined' && cv.Mat) { resolve(); return; }
 
-      const timeout = setTimeout(() => {
-        clearInterval(check);
-        reject(new Error('OpenCV 初始化超时'));
+      var done = false;
+      var timeout = setTimeout(function () {
+        if (!done) { done = true; clearInterval(poll); reject(new Error('OpenCV 初始化超时')); }
       }, 60000);
 
-      const check = setInterval(() => {
+      var poll = setInterval(function () {
         if (typeof cv !== 'undefined' && cv.Mat) {
-          clearInterval(check);
-          clearTimeout(timeout);
-          resolve();
+          if (!done) { done = true; clearInterval(poll); clearTimeout(timeout); resolve(); }
         }
       }, 200);
 
-      if (typeof cv !== 'undefined' && typeof cv.onRuntimeInitialized !== 'undefined') {
-        const origCallback = cv.onRuntimeInitialized;
+      // 同时挂 onRuntimeInitialized 回调
+      if (typeof cv !== 'undefined') {
+        var orig = cv.onRuntimeInitialized;
         cv.onRuntimeInitialized = function () {
-          if (origCallback) origCallback();
-          clearInterval(check);
-          clearTimeout(timeout);
-          resolve();
+          if (orig) orig();
+          if (!done) { done = true; clearInterval(poll); clearTimeout(timeout); resolve(); }
         };
       }
     });
   }
 
+  // ── 防息屏 ────────────────────────────────────────────
+
   async function requestWakeLock() {
     try {
       if ('wakeLock' in navigator) {
         wakeLock = await navigator.wakeLock.request('screen');
-        wakeLock.addEventListener('release', () => { wakeLock = null; });
+        wakeLock.addEventListener('release', function () { wakeLock = null; });
       }
     } catch (_) {}
   }
+
+  // ── 检测主循环 ────────────────────────────────────────
 
   function startDetectionLoop() {
     running = true;
@@ -300,18 +219,17 @@
   function detectionLoop(timestamp) {
     if (!running) return;
 
-    const elapsed = timestamp - lastProcessTime;
-    if (elapsed >= CONFIG.FRAME_INTERVAL && !paused && video.readyState >= 2) {
+    if (!paused && video.readyState >= 2 && timestamp - lastProcessTime >= CONFIG.FRAME_INTERVAL) {
       lastProcessTime = timestamp;
-      processFrame();
+      processFrame(timestamp);
     }
 
     requestAnimationFrame(detectionLoop);
   }
 
-  function processFrame() {
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
+  function processFrame(timestamp) {
+    var vw = video.videoWidth;
+    var vh = video.videoHeight;
     if (!vw || !vh) return;
 
     if (processCanvas.width !== vw || processCanvas.height !== vh) {
@@ -322,11 +240,9 @@
     }
 
     processCtx.drawImage(video, 0, 0, vw, vh);
-    const currentFrame = processCtx.getImageData(0, 0, vw, vh);
+    var currentFrame = processCtx.getImageData(0, 0, vw, vh);
 
-    if (currentState === STATE.PAUSED) return;
-
-    const changeRatio = computeChange(currentFrame.data, lastFrameData, vw, vh);
+    var changeRatio = computeChange(currentFrame.data, lastFrameData);
     lastFrameData = new Uint8ClampedArray(currentFrame.data);
 
     overlayCtx.clearRect(0, 0, vw, vh);
@@ -348,91 +264,89 @@
         stableStart = 0;
       }
     } else {
-      if (!cvReady && !cvLoading) {
-        updateStatusUI('idle', '基础模式 · 等待翻页...');
-      } else if (cvLoading) {
-        updateStatusUI('idle', '矫正引擎加载中 · 等待翻页...');
+      currentState = STATE.IDLE;
+      if (cvLoading) {
+        updateStatusUI('idle', '矫正引擎加载中...');
       } else {
         updateStatusUI('idle', '等待翻页...');
       }
     }
 
-    if (cvReady && (currentState === STATE.IDLE || currentState === STATE.TURNING)) {
+    // overlay 检测降频：每 OVERLAY_INTERVAL ms 跑一次，避免每帧都跑 OpenCV
+    if (cvReady && timestamp - lastOverlayTime >= CONFIG.OVERLAY_INTERVAL) {
+      lastOverlayTime = timestamp;
       drawDocumentOverlay();
     }
   }
 
-  function computeChange(current, previous, w, h) {
-    if (!previous) return 0;
+  // ── 帧差分 ────────────────────────────────────────────
 
-    const step = 4 * 8;
-    const totalSamples = Math.floor((w * h * 4) / step);
-    let diffCount = 0;
+  function computeChange(current, previous) {
+    if (!previous || current.length !== previous.length) return 0;
 
-    for (let i = 0; i < current.length; i += step) {
-      const g1 = current[i] * 0.299 + current[i + 1] * 0.587 + current[i + 2] * 0.114;
-      const g2 = previous[i] * 0.299 + previous[i + 1] * 0.587 + previous[i + 2] * 0.114;
-      if (Math.abs(g1 - g2) > 30) diffCount++;
+    var step = 4 * 8;   // 每 8 像素采样一次，够精度又快
+    var total = 0;
+    var diff = 0;
+
+    for (var i = 0; i < current.length; i += step) {
+      var g1 = current[i] * 0.299 + current[i + 1] * 0.587 + current[i + 2] * 0.114;
+      var g2 = previous[i] * 0.299 + previous[i + 1] * 0.587 + previous[i + 2] * 0.114;
+      if (Math.abs(g1 - g2) > 30) diff++;
+      total++;
     }
 
-    return diffCount / totalSamples;
+    return total > 0 ? diff / total : 0;
   }
+
+  // ── 抓拍与裁剪 ────────────────────────────────────────
 
   function performCapture(frameData, w, h) {
     captureCanvas.width = w;
     captureCanvas.height = h;
     captureCtx.putImageData(frameData, 0, 0);
 
+    // 透视矫正：detectAndCorrect 直接返回已绘制好的 canvas，无需走 Image 异步加载
     var sourceCanvas = captureCanvas;
-
     if (cvReady) {
       try {
-        var correctedDataUrl = DocScanner.detectAndCorrect(captureCanvas);
-        if (correctedDataUrl) {
-          var tempImg = new Image();
-          tempImg.src = correctedDataUrl;
-          if (tempImg.complete && tempImg.naturalWidth > 0) {
-            sourceCanvas = document.createElement('canvas');
-            sourceCanvas.width = tempImg.naturalWidth;
-            sourceCanvas.height = tempImg.naturalHeight;
-            sourceCanvas.getContext('2d').drawImage(tempImg, 0, 0);
-          }
-        }
+        var corrected = DocScanner.detectAndCorrectCanvas(captureCanvas);
+        if (corrected) sourceCanvas = corrected;
       } catch (e) {
-        console.warn('透视矫正失败，保存原图', e);
+        console.warn('透视矫正失败，保存原图:', e);
       }
     }
 
     sourceCanvas = cropToTargetRatio(sourceCanvas);
 
-    var finalDataUrl = sourceCanvas.toDataURL('image/jpeg', 0.92);
-
-    if (isDuplicate(finalDataUrl, sourceCanvas)) {
-      updateStatusUI('idle', '重复页面，跳过');
+    if (isDuplicate(sourceCanvas)) {
+      updateStatusUI('idle', '重复页面，已跳过');
       return;
     }
 
+    var finalDataUrl = sourceCanvas.toDataURL('image/jpeg', 0.92);
     addCapture(finalDataUrl);
     flashEffect();
     updateStatusUI('idle', '已抓拍！');
   }
 
-  function cropToTargetRatio(sourceCanvas) {
-    var sw = sourceCanvas.width;
-    var sh = sourceCanvas.height;
-    var targetRatio = 3 / 4;
-
+  function cropToTargetRatio(src) {
+    var sw = src.width;
+    var sh = src.height;
+    var targetRatio = 3 / 4;               // 宽:高 = 3:4（竖向纸张）
     var currentRatio = sw / sh;
-    if (Math.abs(currentRatio - targetRatio) < 0.05) return sourceCanvas;
+
+    if (Math.abs(currentRatio - targetRatio) < 0.05) return src;
 
     var cropW, cropH, cropX, cropY;
 
     if (currentRatio > targetRatio) {
+      // 原图太宽，左右裁
       cropH = sh;
       cropW = Math.round(sh * targetRatio);
       cropX = Math.round((sw - cropW) / 2);
       cropY = 0;
     } else {
+      // 原图太高，上下裁
       cropW = sw;
       cropH = Math.round(sw / targetRatio);
       cropX = 0;
@@ -442,74 +356,78 @@
     var outH = Math.min(cropH, 2560);
     var outW = Math.round(outH * targetRatio);
 
-    var outCanvas = document.createElement('canvas');
-    outCanvas.width = outW;
-    outCanvas.height = outH;
-    outCanvas.getContext('2d').drawImage(sourceCanvas, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
-
-    return outCanvas;
+    var out = document.createElement('canvas');
+    out.width = outW;
+    out.height = outH;
+    out.getContext('2d').drawImage(src, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
+    return out;
   }
 
-  function isDuplicate(dataUrl, sourceCanvas) {
-    var tempCanvas = document.createElement('canvas');
-    tempCanvas.width = CONFIG.COMPARE_SIZE;
-    tempCanvas.height = CONFIG.COMPARE_SIZE;
-    var tempCtx = tempCanvas.getContext('2d');
+  // ── 去重 ──────────────────────────────────────────────
 
-    var drawSrc = sourceCanvas || captureCanvas;
-    tempCtx.drawImage(drawSrc, 0, 0, CONFIG.COMPARE_SIZE, CONFIG.COMPARE_SIZE);
-    const current = tempCtx.getImageData(0, 0, CONFIG.COMPARE_SIZE, CONFIG.COMPARE_SIZE);
+  function isDuplicate(srcCanvas) {
+    var sz = CONFIG.COMPARE_SIZE;
+    var tmp = document.createElement('canvas');
+    tmp.width = sz;
+    tmp.height = sz;
+    tmp.getContext('2d').drawImage(srcCanvas, 0, 0, sz, sz);
+    var data = tmp.getContext('2d').getImageData(0, 0, sz, sz).data;
 
     if (!lastCapturedData) {
-      lastCapturedData = new Uint8ClampedArray(current.data);
+      lastCapturedData = new Uint8ClampedArray(data);
       return false;
     }
 
-    const data = current.data;
-    let diffCount = 0;
-    const totalPixels = CONFIG.COMPARE_SIZE * CONFIG.COMPARE_SIZE;
-
-    for (let i = 0; i < data.length; i += 4) {
-      const g1 = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-      const g2 = lastCapturedData[i] * 0.299 + lastCapturedData[i + 1] * 0.587 + lastCapturedData[i + 2] * 0.114;
-      if (Math.abs(g1 - g2) > 25) diffCount++;
+    var diff = 0;
+    var total = sz * sz;
+    for (var i = 0; i < data.length; i += 4) {
+      var g1 = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+      var g2 = lastCapturedData[i] * 0.299 + lastCapturedData[i + 1] * 0.587 + lastCapturedData[i + 2] * 0.114;
+      if (Math.abs(g1 - g2) > 25) diff++;
     }
 
     lastCapturedData = new Uint8ClampedArray(data);
-    return (diffCount / totalPixels) < CONFIG.DUPLICATE_THRESHOLD;
+    return (diff / total) < CONFIG.DUPLICATE_THRESHOLD;
   }
+
+  // ── 手动拍照 ──────────────────────────────────────────
 
   function manualCapture() {
     if (video.readyState < 2) return;
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
+    var vw = video.videoWidth;
+    var vh = video.videoHeight;
     processCtx.drawImage(video, 0, 0, vw, vh);
-    const frameData = processCtx.getImageData(0, 0, vw, vh);
+    var frameData = processCtx.getImageData(0, 0, vw, vh);
     performCapture(frameData, vw, vh);
   }
 
+  // ── 缩略图管理 ────────────────────────────────────────
+
   function addCapture(dataUrl) {
+    var idx = captures.length;
     captures.push(dataUrl);
+
     $captureCount.textContent = captures.length;
     $btnExport.disabled = false;
     $btnClear.disabled = false;
-
     $thumbEmpty.style.display = 'none';
 
-    const idx = captures.length - 1;
-    const item = document.createElement('div');
+    var item = document.createElement('div');
     item.className = 'thumb-item';
 
-    const img = document.createElement('img');
+    var img = document.createElement('img');
     img.src = dataUrl;
     item.appendChild(img);
 
-    const del = document.createElement('button');
+    var del = document.createElement('button');
     del.className = 'thumb-delete';
     del.textContent = '✕';
-    del.addEventListener('click', (e) => {
+    del.addEventListener('click', function (e) {
       e.stopPropagation();
-      captures.splice(idx, 1);
+      // 用 item 在 DOM 中的位置倒推实际索引，避免闭包 idx 错位
+      var items = $thumbBar.querySelectorAll('.thumb-item');
+      var domIdx = Array.prototype.indexOf.call(items, item);
+      if (domIdx !== -1) captures.splice(domIdx, 1);
       item.remove();
       $captureCount.textContent = captures.length;
       if (captures.length === 0) {
@@ -525,9 +443,11 @@
     $thumbBar.scrollLeft = $thumbBar.scrollWidth;
   }
 
+  // ── UI 工具 ───────────────────────────────────────────
+
   function flashEffect() {
     $flash.classList.add('flash');
-    setTimeout(() => $flash.classList.remove('flash'), 120);
+    setTimeout(function () { $flash.classList.remove('flash'); }, 120);
   }
 
   function updateStatusUI(state, text) {
@@ -555,6 +475,8 @@
     }
   }
 
+  // ── 导出 ──────────────────────────────────────────────
+
   async function exportImages() {
     if (captures.length === 0) return;
 
@@ -562,34 +484,32 @@
     $btnExport.textContent = '⏳ 打包中...';
 
     try {
-      if (typeof JSZip === 'undefined') {
-        for (let i = 0; i < captures.length; i++) {
-          const a = document.createElement('a');
-          a.href = captures[i];
-          a.download = `page_${String(i + 1).padStart(3, '0')}.jpg`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
+      if (typeof JSZip !== 'undefined') {
+        var zip = new JSZip();
+        var folder = zip.folder('scanned_docs');
+        for (var i = 0; i < captures.length; i++) {
+          var base64 = captures[i].split(',')[1];
+          folder.file('page_' + String(i + 1).padStart(3, '0') + '.jpg', base64, { base64: true });
         }
-      } else {
-        const zip = new JSZip();
-        const folder = zip.folder('scanned_docs');
-
-        for (let i = 0; i < captures.length; i++) {
-          const base64 = captures[i].split(',')[1];
-          folder.file(`page_${String(i + 1).padStart(3, '0')}.jpg`, base64, { base64: true });
-        }
-
-        const blob = await zip.generateAsync({ type: 'blob' });
-        const url = URL.createObjectURL(blob);
-
-        const a = document.createElement('a');
+        var blob = await zip.generateAsync({ type: 'blob' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
         a.href = url;
-        a.download = `扫描文档_${new Date().toISOString().slice(0, 10)}.zip`;
+        a.download = '扫描文档_' + new Date().toISOString().slice(0, 10) + '.zip';
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+      } else {
+        // JSZip 未加载则逐张下载
+        for (var i = 0; i < captures.length; i++) {
+          var a = document.createElement('a');
+          a.href = captures[i];
+          a.download = 'page_' + String(i + 1).padStart(3, '0') + '.jpg';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        }
       }
     } catch (e) {
       alert('导出失败: ' + e.message);
@@ -606,43 +526,44 @@
     $captureCount.textContent = '0';
     $btnExport.disabled = true;
     $btnClear.disabled = true;
-    $thumbBar.querySelectorAll('.thumb-item').forEach(el => el.remove());
+    $thumbBar.querySelectorAll('.thumb-item').forEach(function (el) { el.remove(); });
     $thumbEmpty.style.display = '';
   }
 
+  // ── 文档边框 overlay ─────────────────────────────────
+
   function drawDocumentOverlay() {
     try {
-      const corners = DocScanner.detectCorners(processCanvas);
-      if (corners && corners.length === 4) {
-        overlayCtx.strokeStyle = 'rgba(0, 212, 255, 0.7)';
-        overlayCtx.lineWidth = 3;
-        overlayCtx.setLineDash([8, 4]);
-        overlayCtx.beginPath();
-        overlayCtx.moveTo(corners[0].x, corners[0].y);
-        for (let i = 1; i < 4; i++) {
-          overlayCtx.lineTo(corners[i].x, corners[i].y);
-        }
-        overlayCtx.closePath();
-        overlayCtx.stroke();
-        overlayCtx.setLineDash([]);
+      var corners = DocScanner.detectCorners(processCanvas);
+      if (!corners || corners.length !== 4) return;
 
-        corners.forEach(c => {
-          overlayCtx.fillStyle = 'rgba(0, 212, 255, 0.9)';
-          overlayCtx.beginPath();
-          overlayCtx.arc(c.x, c.y, 6, 0, Math.PI * 2);
-          overlayCtx.fill();
-        });
+      overlayCtx.strokeStyle = 'rgba(0, 212, 255, 0.75)';
+      overlayCtx.lineWidth = 3;
+      overlayCtx.setLineDash([8, 4]);
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(corners[0].x, corners[0].y);
+      for (var i = 1; i < 4; i++) overlayCtx.lineTo(corners[i].x, corners[i].y);
+      overlayCtx.closePath();
+      overlayCtx.stroke();
+      overlayCtx.setLineDash([]);
+
+      for (var i = 0; i < 4; i++) {
+        overlayCtx.fillStyle = 'rgba(0, 212, 255, 0.9)';
+        overlayCtx.beginPath();
+        overlayCtx.arc(corners[i].x, corners[i].y, 6, 0, Math.PI * 2);
+        overlayCtx.fill();
       }
     } catch (_) {}
   }
 
-  document.addEventListener('visibilitychange', async () => {
-    if (document.visibilityState === 'visible' && running) {
-      await requestWakeLock();
-    }
+  // ── 页面可见性 / SW ───────────────────────────────────
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && running) requestWakeLock();
   });
 
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js').catch(function () {});
   }
+
 })();

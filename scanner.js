@@ -154,7 +154,8 @@ var DocScanner = (function () {
     return [tl, tr, br, bl];
   }
 
-  function detectAndCorrect(sourceCanvas) {
+  // 返回矫正后的 canvas（同步，无 Image 异步加载问题）
+  function detectAndCorrectCanvas(sourceCanvas) {
     if (typeof cv === 'undefined' || !cv.Mat) return null;
 
     var corners = detectCorners(sourceCanvas);
@@ -168,11 +169,16 @@ var DocScanner = (function () {
       resultCanvas.height = dst.rows;
       cv.imshow(resultCanvas, dst);
       dst.delete();
-
-      return resultCanvas.toDataURL('image/jpeg', 0.92);
+      return resultCanvas;
     } finally {
       src.delete();
     }
+  }
+
+  // 保留旧接口兼容
+  function detectAndCorrect(sourceCanvas) {
+    var canvas = detectAndCorrectCanvas(sourceCanvas);
+    return canvas ? canvas.toDataURL('image/jpeg', 0.92) : null;
   }
 
   function perspectiveCorrect(src, corners) {
@@ -220,5 +226,6 @@ var DocScanner = (function () {
   return {
     detectCorners: detectCorners,
     detectAndCorrect: detectAndCorrect,
+    detectAndCorrectCanvas: detectAndCorrectCanvas,
   };
 })();
