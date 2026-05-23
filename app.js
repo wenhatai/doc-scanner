@@ -88,23 +88,31 @@
   }
 
   async function startCamera() {
-    // 不指定分辨率，让手机用摄像头原生最广视角
-    // 指定宽高会导致部分手机裁切/缩放画面，造成焦距变大
+    // 策略：
+    // 1. 用 ideal 请求高分辨率（1920x1440），浏览器会选最接近的原生档位
+    // 2. 不用 exact，避免摄像头为凑分辨率做数字裁切（那会让焦距变大）
+    // 3. 只约束长边 >= 1440，让摄像头自由选宽高比，保留原生视角
     var constraints = {
       video: {
         facingMode: { ideal: 'environment' },
+        width:  { min: 1080, ideal: 1920 },
+        height: { min: 1080, ideal: 1440 },
       },
       audio: false,
     };
 
     var stream = await navigator.mediaDevices.getUserMedia(constraints);
+    var track = stream.getVideoTracks()[0];
 
-    // 开启持续对焦（不支持则静默忽略）
+    // 持续对焦 + 自动微距（iOS Safari 17+ 系统自动处理微距切换，无需额外 API）
     try {
-      var track = stream.getVideoTracks()[0];
       var caps = track.getCapabilities ? track.getCapabilities() : {};
+      var adv = {};
       if (caps.focusMode && caps.focusMode.indexOf('continuous') !== -1) {
-        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+        adv.focusMode = 'continuous';
+      }
+      if (Object.keys(adv).length > 0) {
+        await track.applyConstraints({ advanced: [adv] });
       }
     } catch (_) {}
 
@@ -116,16 +124,13 @@
       video.onerror = reject;
     });
 
-    // 显示摄像头实际分辨率，方便调试
-    var track = stream.getVideoTracks()[0];
+    // 状态栏显示实际分辨率，便于调试
     var settings = track.getSettings ? track.getSettings() : {};
-    var label = track.label || '';
     var w = settings.width || video.videoWidth;
     var h = settings.height || video.videoHeight;
+    var label = (track.label || '').substring(0, 24);
     var camInfo = document.getElementById('camInfo');
-    if (camInfo) {
-      camInfo.textContent = w + 'x' + h + (label ? '  ' + label.substring(0, 20) : '');
-    }
+    if (camInfo) camInfo.textContent = w + 'x' + h + (label ? '  ' + label : '');
   }
 
   // ── OpenCV 异步加载 ───────────────────────────────────
