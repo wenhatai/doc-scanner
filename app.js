@@ -9,6 +9,8 @@
     DUPLICATE_THRESHOLD: 0.05,
     COMPARE_SIZE: 100,
     MAX_RESOLUTION: 1920,
+    CAPTURE_WIDTH: 1920,
+    CAPTURE_HEIGHT: 1080,
     OPENCV_LOAD_TIMEOUT: 30000,
   };
 
@@ -85,18 +87,96 @@
   }
 
   async function startCamera() {
-    const constraints = {
+    var constraints = {
       video: {
         facingMode: { ideal: 'environment' },
-        width: { ideal: CONFIG.MAX_RESOLUTION },
-        height: { ideal: CONFIG.MAX_RESOLUTION },
+        width: { ideal: CONFIG.CAPTURE_WIDTH },
+        height: { ideal: CONFIG.CAPTURE_HEIGHT },
       },
       audio: false,
     };
-    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    var stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    try {
+      var track = stream.getVideoTracks()[0];
+      var capabilities = track.getCapabilities ? track.getCapabilities() : {};
+      var settings = {};
+      if (capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
+        settings.focusMode = 'continuous';
+      }
+      if (Object.keys(settings).length > 0) {
+        await track.applyConstraints({ advanced: [settings] });
+      }
+    } catch (_) {}
+
     video.srcObject = stream;
     await new Promise((resolve, reject) => {
       video.onloadedmetadata = () => {
+        video.play().then(resolve).catch(reject);
+      };
+      video.onerror = reject;
+    });
+  }
+      }
+
+      if (!deviceId && backDevices.length > 0) {
+        var testStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false,
+        });
+        var mainTrack = testStream.getVideoTracks()[0];
+        var mainSettings = mainTrack.getSettings();
+        var mainDeviceId = mainSettings.deviceId;
+        testStream.getTracks().forEach(function (t) { t.stop(); });
+
+        for (var i = 0; i < backDevices.length; i++) {
+          if (backDevices[i].deviceId !== mainDeviceId) {
+            deviceId = backDevices[i].deviceId;
+            break;
+          }
+        }
+      }
+    }
+
+    var constraints;
+    if (deviceId) {
+      constraints = {
+        video: {
+          deviceId: { exact: deviceId },
+          width: { ideal: CONFIG.CAPTURE_WIDTH },
+          height: { ideal: CONFIG.CAPTURE_HEIGHT },
+        },
+        audio: false,
+      };
+    } else {
+      constraints = {
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: CONFIG.CAPTURE_WIDTH },
+          height: { ideal: CONFIG.CAPTURE_HEIGHT },
+        },
+        audio: false,
+      };
+    }
+
+    var stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    try {
+      var track = stream.getVideoTracks()[0];
+      var capabilities = track.getCapabilities ? track.getCapabilities() : {};
+      var settings = {};
+      if (capabilities.focusMode && capabilities.focusMode.indexOf('continuous') !== -1) {
+        settings.focusMode = 'continuous';
+      }
+      if (Object.keys(settings).length > 0) {
+        await track.applyConstraints({ advanced: [settings] });
+      }
+    } catch (_) {}
+
+    video.srcObject = stream;
+    await new Promise(function (resolve, reject) {
+      video.onloadedmetadata = function () {
         video.play().then(resolve).catch(reject);
       };
       video.onerror = reject;
