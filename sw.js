@@ -1,5 +1,5 @@
 // 每次发布新版本，修改这个版本号，旧缓存会自动清除
-var VERSION = 'v1.4.1';
+var VERSION = 'v1.6.0';
 var CACHE_APP = 'doc-scanner-app-' + VERSION;
 var CACHE_CDN = 'doc-scanner-cdn-v1';  // CDN 库不随版本变，单独一个 cache
 

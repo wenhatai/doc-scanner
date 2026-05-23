@@ -1,16 +1,34 @@
 (function () {
   'use strict';
 
+  var VERSION = 'v1.6.0';
+
   var CONFIG = {
     FRAME_INTERVAL: 100,
     OVERLAY_INTERVAL: 500,
     STABLE_DURATION: 800,
-    CHANGE_THRESHOLD: 0.15,   // 翻页触发阈值（可调）
-    STABLE_THRESHOLD: 0.04,   // 稳定判定阈值（可调）
+    CHANGE_THRESHOLD: 0.15,
+    STABLE_THRESHOLD: 0.04,
     DUPLICATE_THRESHOLD: 0.05,
     COMPARE_SIZE: 100,
     OPENCV_LOAD_TIMEOUT: 30000,
   };
+
+  // 固定标准档位列表（按像素数从高到低），启动时用 ideal 就近匹配
+  // 会在 probeResolutions 里过滤掉超过摄像头最大值的档位
+  var RES_PRESETS = [
+    { w: 4032, h: 3024, tag: '4:3' },
+    { w: 4032, h: 2268, tag: '16:9' },
+    { w: 3840, h: 2160, tag: '4K 16:9' },
+    { w: 3264, h: 2448, tag: '4:3' },
+    { w: 2560, h: 1920, tag: '4:3' },
+    { w: 2560, h: 1440, tag: '2K 16:9' },
+    { w: 1920, h: 1440, tag: '4:3' },
+    { w: 1920, h: 1080, tag: '1080p 16:9' },
+    { w: 1280, h: 960,  tag: '4:3' },
+    { w: 1280, h: 720,  tag: '720p 16:9' },
+    { w: 640,  h: 480,  tag: '4:3' },
+  ];
 
   var STATE = { IDLE: 'idle', TURNING: 'turning', PAUSED: 'paused' };
 
@@ -32,30 +50,30 @@
   var cvLoading = false;
   var lastProcessTime = 0;
   var lastOverlayTime = 0;
+  var selectedRes = null;    // { w, h, label } 用户选择的分辨率，null = 原生默认
+  var currentStream = null;
 
-  var video = document.getElementById('video');
-  var overlayCanvas = document.getElementById('overlayCanvas');
-  var overlayCtx = overlayCanvas.getContext('2d', { willReadFrequently: true });
-
-  var processCanvas = document.createElement('canvas');
-  var processCtx = processCanvas.getContext('2d', { willReadFrequently: true });
-
-  var captureCanvas = document.createElement('canvas');
-  var captureCtx = captureCanvas.getContext('2d');
+  var video        = document.getElementById('video');
+  var overlayCanvas= document.getElementById('overlayCanvas');
+  var overlayCtx   = overlayCanvas.getContext('2d', { willReadFrequently: true });
+  var processCanvas= document.createElement('canvas');
+  var processCtx   = processCanvas.getContext('2d', { willReadFrequently: true });
+  var captureCanvas= document.createElement('canvas');
+  var captureCtx   = captureCanvas.getContext('2d');
 
   var $startScreen = document.getElementById('startScreen');
-  var $loading = document.getElementById('loadingOverlay');
+  var $loading     = document.getElementById('loadingOverlay');
   var $loadingText = document.getElementById('loadingText');
-  var $flash = document.getElementById('flashOverlay');
-  var $statusDot = document.getElementById('statusDot');
-  var $statusText = document.getElementById('statusText');
-  var $captureCount = document.getElementById('captureCount');
-  var $btnManual = document.getElementById('btnManual');
-  var $btnPause = document.getElementById('btnPause');
-  var $btnExport = document.getElementById('btnExport');
-  var $btnClear = document.getElementById('btnClear');
-  var $thumbBar = document.getElementById('thumbBar');
-  var $thumbEmpty = document.getElementById('thumbEmpty');
+  var $flash       = document.getElementById('flashOverlay');
+  var $statusDot   = document.getElementById('statusDot');
+  var $statusText  = document.getElementById('statusText');
+  var $captureCount= document.getElementById('captureCount');
+  var $btnManual   = document.getElementById('btnManual');
+  var $btnPause    = document.getElementById('btnPause');
+  var $btnExport   = document.getElementById('btnExport');
+  var $btnClear    = document.getElementById('btnClear');
+  var $thumbBar    = document.getElementById('thumbBar');
+  var $thumbEmpty  = document.getElementById('thumbEmpty');
 
   document.getElementById('btnStart').addEventListener('click', startApp);
   $btnManual.addEventListener('click', manualCapture);
@@ -64,6 +82,100 @@
   $btnClear.addEventListener('click', clearAll);
   document.getElementById('btnSettings').addEventListener('click', toggleSettings);
   initSliders();
+
+  // 页面加载后立即探测支持的分辨率
+  probeResolutions();
+
+  // ── 分辨率检测（用 getCapabilities，无需逐个探测）────────
+
+  async function probeResolutions() {
+    var resLoading = document.getElementById('resLoading');
+    var resGrid    = document.getElementById('resGrid');
+    var resHint    = document.getElementById('resHint');
+    var btnStart   = document.getElementById('btnStart');
+
+    // 请求一次摄像头权限，读取 getCapabilities()，然后立即关掉
+    var stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+    } catch (e) {
+      resLoading.textContent = '摄像头权限被拒绝：' + e.message;
+      return;
+    }
+
+    var track    = stream.getVideoTracks()[0];
+    var caps     = track.getCapabilities ? track.getCapabilities() : {};
+    var settings = track.getSettings    ? track.getSettings()     : {};
+    var camLabel = (track.label || '').substring(0, 36);
+    stream.getTracks().forEach(function (t) { t.stop(); });
+
+    // 摄像头支持的最大分辨率（优先 capabilities，fallback settings）
+    var maxW = (caps.width  && caps.width.max)  || settings.width  || 9999;
+    var maxH = (caps.height && caps.height.max) || settings.height || 9999;
+
+    resLoading.style.display = 'none';
+    resGrid.style.display = 'grid';
+
+    // 过滤标准档位：不超过摄像头最大值，去重
+    var seen = {};
+    var list = [];
+
+    // 最顶部加"摄像头原生最大"（只在能拿到有效 max 时显示）
+    if (maxW < 9999 && maxH < 9999) {
+      var nativeKey = maxW + 'x' + maxH;
+      seen[nativeKey] = true;
+      list.push({ w: maxW, h: maxH, tag: '原生最大' });
+    }
+
+    RES_PRESETS.forEach(function (r) {
+      if (r.w > maxW || r.h > maxH) return;
+      var key = r.w + 'x' + r.h;
+      if (seen[key]) return;
+      seen[key] = true;
+      list.push({ w: r.w, h: r.h, tag: r.tag });
+    });
+
+    // 从高到低排序（原生最大已在最前，但以防万一）
+    list.sort(function (a, b) { return (b.w * b.h) - (a.w * a.h); });
+
+    if (list.length === 0) {
+      resHint.textContent = '将使用摄像头默认分辨率';
+      selectedRes = null;
+      btnStart.disabled = false;
+      return;
+    }
+
+    list.forEach(function (r, idx) {
+      var lbl = document.createElement('label');
+      lbl.className = 'res-opt';
+
+      var input = document.createElement('input');
+      input.type = 'radio'; input.name = 'res'; input.value = idx;
+      if (idx === 0) { input.checked = true; selectedRes = r; }
+
+      var span = document.createElement('span');
+      span.innerHTML = r.w + '×' + r.h + '<small>' + r.tag + '</small>';
+
+      input.addEventListener('change', function () {
+        if (this.checked) {
+          selectedRes = r;
+          resHint.textContent = r.w + '×' + r.h + ' ' + r.tag;
+        }
+      });
+
+      lbl.appendChild(input);
+      lbl.appendChild(span);
+      resGrid.appendChild(lbl);
+    });
+
+    var firstRes = list[0];
+    resHint.textContent = (camLabel ? camLabel + '  ' : '') +
+                          firstRes.w + '×' + firstRes.h + ' ' + firstRes.tag;
+    btnStart.disabled = false;
+  }
 
   // ── 启动 ──────────────────────────────────────────────
 
@@ -88,102 +200,74 @@
   }
 
   async function startCamera() {
-    // 策略：
-    // 1. 用 ideal 请求高分辨率（1920x1440），浏览器会选最接近的原生档位
-    // 2. 不用 exact，避免摄像头为凑分辨率做数字裁切（那会让焦距变大）
-    // 3. 只约束长边 >= 1440，让摄像头自由选宽高比，保留原生视角
-    var constraints = {
-      video: {
-        facingMode: { ideal: 'environment' },
-        width:  { min: 1080, ideal: 1920 },
-        height: { min: 1080, ideal: 1440 },
-      },
-      audio: false,
-    };
+    // 停掉旧流
+    if (currentStream) {
+      currentStream.getTracks().forEach(function (t) { t.stop(); });
+      currentStream = null;
+    }
 
-    var stream = await navigator.mediaDevices.getUserMedia(constraints);
+    var videoConstraints = { facingMode: { ideal: 'environment' } };
+
+    if (selectedRes) {
+      // 用 ideal 让浏览器就近匹配，避免 exact 在不支持该分辨率时抛出 OverconstrainedError
+      videoConstraints.width  = { ideal: selectedRes.w };
+      videoConstraints.height = { ideal: selectedRes.h };
+    }
+
+    var stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+    currentStream = stream;
     var track = stream.getVideoTracks()[0];
 
-    // 持续对焦 + 自动微距（iOS Safari 17+ 系统自动处理微距切换，无需额外 API）
+    // 持续对焦（iOS Safari 17+ 自动处理微距，Android 看厂商）
     try {
       var caps = track.getCapabilities ? track.getCapabilities() : {};
-      var adv = {};
       if (caps.focusMode && caps.focusMode.indexOf('continuous') !== -1) {
-        adv.focusMode = 'continuous';
-      }
-      if (Object.keys(adv).length > 0) {
-        await track.applyConstraints({ advanced: [adv] });
+        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
       }
     } catch (_) {}
 
     video.srcObject = stream;
     await new Promise(function (resolve, reject) {
-      video.onloadedmetadata = function () {
-        video.play().then(resolve).catch(reject);
-      };
+      video.onloadedmetadata = function () { video.play().then(resolve).catch(reject); };
       video.onerror = reject;
     });
 
-    // 状态栏显示实际分辨率，便于调试
-    var settings = track.getSettings ? track.getSettings() : {};
-    var w = settings.width || video.videoWidth;
-    var h = settings.height || video.videoHeight;
-    var label = (track.label || '').substring(0, 24);
+    // 显示实际分辨率
+    var st = track.getSettings ? track.getSettings() : {};
+    var w = st.width  || video.videoWidth;
+    var h = st.height || video.videoHeight;
+    var lbl = (track.label || '').substring(0, 28);
     var camInfo = document.getElementById('camInfo');
-    if (camInfo) camInfo.textContent = w + 'x' + h + (label ? '  ' + label : '');
+    if (camInfo) camInfo.textContent = w + '×' + h + (lbl ? '  ' + lbl : '');
   }
 
   // ── OpenCV 异步加载 ───────────────────────────────────
 
   function loadOpenCVAsync() {
-    if (typeof cv !== 'undefined' && cv.Mat) {
-      cvReady = true;
-      updateStatusUI('idle', '智能矫正已就绪');
-      return;
-    }
+    if (typeof cv !== 'undefined' && cv.Mat) { cvReady = true; updateStatusUI('idle', '智能矫正已就绪'); return; }
     if (cvLoading) return;
     cvLoading = true;
 
     loadScriptFromMirrors(OPENCV_MIRRORS)
       .then(function () { return waitForOpenCVReady(); })
-      .then(function () {
-        cvReady = true;
-        cvLoading = false;
-        updateStatusUI('idle', '智能矫正已就绪');
-      })
-      .catch(function (err) {
-        cvLoading = false;
-        console.warn('OpenCV 加载失败，使用无矫正模式:', err);
-        updateStatusUI('idle', '基础模式（无自动矫正）');
-      });
+      .then(function () { cvReady = true; cvLoading = false; updateStatusUI('idle', '智能矫正已就绪'); })
+      .catch(function (e) { cvLoading = false; console.warn('OpenCV 加载失败:', e); updateStatusUI('idle', '基础模式（无自动矫正）'); });
   }
 
   function loadScriptFromMirrors(urls) {
     return new Promise(function (resolve, reject) {
       var idx = 0;
-
       function tryNext() {
-        if (idx >= urls.length) { reject(new Error('所有镜像均加载失败')); return; }
-
+        if (idx >= urls.length) { reject(new Error('所有镜像均失败')); return; }
         var url = urls[idx++];
-        var script = document.createElement('script');
-        script.src = url;
-        script.async = true;
-
+        var s = document.createElement('script');
+        s.src = url; s.async = true;
         var timer = setTimeout(function () { cleanup(); tryNext(); }, CONFIG.OPENCV_LOAD_TIMEOUT);
-
-        function cleanup() {
-          clearTimeout(timer);
-          script.onload = null;
-          script.onerror = null;
-          if (script.parentNode) script.parentNode.removeChild(script);
-        }
-
-        script.onload = function () { cleanup(); resolve(); };
-        script.onerror = function () { cleanup(); tryNext(); };
-        document.head.appendChild(script);
+        function cleanup() { clearTimeout(timer); s.onload = s.onerror = null; if (s.parentNode) s.parentNode.removeChild(s); }
+        s.onload = function () { cleanup(); resolve(); };
+        s.onerror = function () { cleanup(); tryNext(); };
+        document.head.appendChild(s);
       }
-
       tryNext();
     });
   }
@@ -191,25 +275,14 @@
   function waitForOpenCVReady() {
     return new Promise(function (resolve, reject) {
       if (typeof cv !== 'undefined' && cv.Mat) { resolve(); return; }
-
       var done = false;
-      var timeout = setTimeout(function () {
-        if (!done) { done = true; clearInterval(poll); reject(new Error('OpenCV 初始化超时')); }
-      }, 60000);
-
+      var timeout = setTimeout(function () { if (!done) { done = true; clearInterval(poll); reject(new Error('超时')); } }, 60000);
       var poll = setInterval(function () {
-        if (typeof cv !== 'undefined' && cv.Mat) {
-          if (!done) { done = true; clearInterval(poll); clearTimeout(timeout); resolve(); }
-        }
+        if (typeof cv !== 'undefined' && cv.Mat) { if (!done) { done = true; clearInterval(poll); clearTimeout(timeout); resolve(); } }
       }, 200);
-
-      // 同时挂 onRuntimeInitialized 回调
       if (typeof cv !== 'undefined') {
         var orig = cv.onRuntimeInitialized;
-        cv.onRuntimeInitialized = function () {
-          if (orig) orig();
-          if (!done) { done = true; clearInterval(poll); clearTimeout(timeout); resolve(); }
-        };
+        cv.onRuntimeInitialized = function () { if (orig) orig(); if (!done) { done = true; clearInterval(poll); clearTimeout(timeout); resolve(); } };
       }
     });
   }
@@ -234,30 +307,24 @@
 
   function detectionLoop(timestamp) {
     if (!running) return;
-
     if (!paused && video.readyState >= 2 && timestamp - lastProcessTime >= CONFIG.FRAME_INTERVAL) {
       lastProcessTime = timestamp;
       processFrame(timestamp);
     }
-
     requestAnimationFrame(detectionLoop);
   }
 
   function processFrame(timestamp) {
-    var vw = video.videoWidth;
-    var vh = video.videoHeight;
+    var vw = video.videoWidth, vh = video.videoHeight;
     if (!vw || !vh) return;
 
     if (processCanvas.width !== vw || processCanvas.height !== vh) {
-      processCanvas.width = vw;
-      processCanvas.height = vh;
-      overlayCanvas.width = vw;
-      overlayCanvas.height = vh;
+      processCanvas.width = vw; processCanvas.height = vh;
+      overlayCanvas.width = vw; overlayCanvas.height = vh;
     }
 
     processCtx.drawImage(video, 0, 0, vw, vh);
     var currentFrame = processCtx.getImageData(0, 0, vw, vh);
-
     var changeRatio = computeChange(currentFrame.data, lastFrameData);
     lastFrameData = new Uint8ClampedArray(currentFrame.data);
 
@@ -269,9 +336,8 @@
       updateStatusUI('turning', '翻页检测中...');
     } else if (currentState === STATE.TURNING) {
       if (changeRatio < CONFIG.STABLE_THRESHOLD) {
-        if (!stableStart) {
-          stableStart = performance.now();
-        } else if (performance.now() - stableStart >= CONFIG.STABLE_DURATION) {
+        if (!stableStart) stableStart = performance.now();
+        else if (performance.now() - stableStart >= CONFIG.STABLE_DURATION) {
           performCapture(currentFrame, vw, vh);
           currentState = STATE.IDLE;
           stableStart = 0;
@@ -281,14 +347,9 @@
       }
     } else {
       currentState = STATE.IDLE;
-      if (cvLoading) {
-        updateStatusUI('idle', '矫正引擎加载中...');
-      } else {
-        updateStatusUI('idle', '等待翻页...');
-      }
+      updateStatusUI('idle', cvLoading ? '矫正引擎加载中...' : '等待翻页...');
     }
 
-    // overlay 检测降频：每 OVERLAY_INTERVAL ms 跑一次，避免每帧都跑 OpenCV
     if (cvReady && timestamp - lastOverlayTime >= CONFIG.OVERLAY_INTERVAL) {
       lastOverlayTime = timestamp;
       drawDocumentOverlay();
@@ -299,90 +360,36 @@
 
   function computeChange(current, previous) {
     if (!previous || current.length !== previous.length) return 0;
-
-    var step = 4 * 8;   // 每 8 像素采样一次，够精度又快
-    var total = 0;
-    var diff = 0;
-
+    var step = 32, diff = 0, total = 0;
     for (var i = 0; i < current.length; i += step) {
-      var g1 = current[i] * 0.299 + current[i + 1] * 0.587 + current[i + 2] * 0.114;
-      var g2 = previous[i] * 0.299 + previous[i + 1] * 0.587 + previous[i + 2] * 0.114;
+      var g1 = current[i] * 0.299 + current[i+1] * 0.587 + current[i+2] * 0.114;
+      var g2 = previous[i] * 0.299 + previous[i+1] * 0.587 + previous[i+2] * 0.114;
       if (Math.abs(g1 - g2) > 30) diff++;
       total++;
     }
-
     return total > 0 ? diff / total : 0;
   }
 
-  // ── 抓拍与裁剪 ────────────────────────────────────────
+  // ── 抓拍 ─────────────────────────────────────────────
 
   function performCapture(frameData, w, h) {
     captureCanvas.width = w;
     captureCanvas.height = h;
     captureCtx.putImageData(frameData, 0, 0);
 
-    // 透视矫正：detectAndCorrect 直接返回已绘制好的 canvas，无需走 Image 异步加载
     var sourceCanvas = captureCanvas;
     if (cvReady) {
       try {
         var corrected = DocScanner.detectAndCorrectCanvas(captureCanvas);
         if (corrected) sourceCanvas = corrected;
-      } catch (e) {
-        console.warn('透视矫正失败，保存原图:', e);
-      }
+      } catch (e) { console.warn('矫正失败:', e); }
     }
 
-    sourceCanvas = cropToTargetRatio(sourceCanvas);
+    if (isDuplicate(sourceCanvas)) { updateStatusUI('idle', '重复页面，已跳过'); return; }
 
-    if (isDuplicate(sourceCanvas)) {
-      updateStatusUI('idle', '重复页面，已跳过');
-      return;
-    }
-
-    var finalDataUrl = sourceCanvas.toDataURL('image/jpeg', 0.92);
-    addCapture(finalDataUrl);
+    addCapture(sourceCanvas.toDataURL('image/jpeg', 0.92));
     flashEffect();
     updateStatusUI('idle', '已抓拍！');
-  }
-
-  function cropToTargetRatio(src) {
-    var sw = src.width;
-    var sh = src.height;
-    // 3:4 竖向（宽:高），与 A4 纸比例接近
-    var targetW = 3, targetH = 4;
-    var targetRatio = targetW / targetH;
-    var currentRatio = sw / sh;
-
-    var cropW, cropH, cropX, cropY;
-
-    if (Math.abs(currentRatio - targetRatio) < 0.04) {
-      // 已经接近 3:4，直接限制最大尺寸
-      cropW = sw; cropH = sh; cropX = 0; cropY = 0;
-    } else if (currentRatio > targetRatio) {
-      // 原图太宽（如 4:3、16:9、1:1），左右居中裁
-      cropH = sh;
-      cropW = Math.round(sh * targetRatio);
-      cropX = Math.round((sw - cropW) / 2);
-      cropY = 0;
-    } else {
-      // 原图太高，上下居中裁
-      cropW = sw;
-      cropH = Math.round(sw / targetRatio);
-      // 确保裁剪高度不超过原图
-      cropH = Math.min(cropH, sh);
-      cropX = 0;
-      cropY = Math.round((sh - cropH) / 2);
-    }
-
-    // 限制最大输出尺寸：高度不超过 2560
-    var outH = Math.min(cropH, 2560);
-    var outW = Math.round(outH * targetRatio);
-
-    var out = document.createElement('canvas');
-    out.width = outW;
-    out.height = outH;
-    out.getContext('2d').drawImage(src, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
-    return out;
   }
 
   // ── 去重 ──────────────────────────────────────────────
@@ -390,24 +397,18 @@
   function isDuplicate(srcCanvas) {
     var sz = CONFIG.COMPARE_SIZE;
     var tmp = document.createElement('canvas');
-    tmp.width = sz;
-    tmp.height = sz;
+    tmp.width = sz; tmp.height = sz;
     tmp.getContext('2d').drawImage(srcCanvas, 0, 0, sz, sz);
     var data = tmp.getContext('2d').getImageData(0, 0, sz, sz).data;
 
-    if (!lastCapturedData) {
-      lastCapturedData = new Uint8ClampedArray(data);
-      return false;
-    }
+    if (!lastCapturedData) { lastCapturedData = new Uint8ClampedArray(data); return false; }
 
-    var diff = 0;
-    var total = sz * sz;
+    var diff = 0, total = sz * sz;
     for (var i = 0; i < data.length; i += 4) {
-      var g1 = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-      var g2 = lastCapturedData[i] * 0.299 + lastCapturedData[i + 1] * 0.587 + lastCapturedData[i + 2] * 0.114;
+      var g1 = data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114;
+      var g2 = lastCapturedData[i]*0.299 + lastCapturedData[i+1]*0.587 + lastCapturedData[i+2]*0.114;
       if (Math.abs(g1 - g2) > 25) diff++;
     }
-
     lastCapturedData = new Uint8ClampedArray(data);
     return (diff / total) < CONFIG.DUPLICATE_THRESHOLD;
   }
@@ -416,19 +417,15 @@
 
   function manualCapture() {
     if (video.readyState < 2) return;
-    var vw = video.videoWidth;
-    var vh = video.videoHeight;
+    var vw = video.videoWidth, vh = video.videoHeight;
     processCtx.drawImage(video, 0, 0, vw, vh);
-    var frameData = processCtx.getImageData(0, 0, vw, vh);
-    performCapture(frameData, vw, vh);
+    performCapture(processCtx.getImageData(0, 0, vw, vh), vw, vh);
   }
 
-  // ── 缩略图管理 ────────────────────────────────────────
+  // ── 缩略图 ────────────────────────────────────────────
 
   function addCapture(dataUrl) {
-    var idx = captures.length;
     captures.push(dataUrl);
-
     $captureCount.textContent = captures.length;
     $btnExport.disabled = false;
     $btnClear.disabled = false;
@@ -442,11 +439,10 @@
     item.appendChild(img);
 
     var del = document.createElement('button');
-    del.className = 'thumb-delete';
+    del.className = 'thumb-del';
     del.textContent = '✕';
     del.addEventListener('click', function (e) {
       e.stopPropagation();
-      // 用 item 在 DOM 中的位置倒推实际索引，避免闭包 idx 错位
       var items = $thumbBar.querySelectorAll('.thumb-item');
       var domIdx = Array.prototype.indexOf.call(items, item);
       if (domIdx !== -1) captures.splice(domIdx, 1);
@@ -460,12 +456,11 @@
       }
     });
     item.appendChild(del);
-
     $thumbBar.appendChild(item);
     $thumbBar.scrollLeft = $thumbBar.scrollWidth;
   }
 
-  // ── UI 工具 ───────────────────────────────────────────
+  // ── UI ───────────────────────────────────────────────
 
   function flashEffect() {
     $flash.classList.add('flash');
@@ -484,121 +479,86 @@
     if (paused) {
       currentState = STATE.PAUSED;
       $btnPause.textContent = '▶ 继续';
-      $btnPause.classList.remove('secondary');
-      $btnPause.classList.add('primary');
+      $btnPause.classList.replace('secondary', 'primary');
       updateStatusUI('idle', '已暂停');
     } else {
       currentState = STATE.IDLE;
       lastFrameData = null;
       $btnPause.textContent = '⏸ 暂停';
-      $btnPause.classList.remove('primary');
-      $btnPause.classList.add('secondary');
+      $btnPause.classList.replace('primary', 'secondary');
       updateStatusUI('idle', '等待翻页...');
     }
+  }
+
+  function toggleSettings() {
+    var panel = document.getElementById('settingsPanel');
+    var btn = document.getElementById('btnSettings');
+    var open = panel.classList.toggle('open');
+    btn.style.background = open ? 'rgba(0,212,255,0.2)' : '';
+  }
+
+  function initSliders() {
+    var sc = document.getElementById('sliderChange');
+    var vc = document.getElementById('valChange');
+    sc.addEventListener('input', function () { CONFIG.CHANGE_THRESHOLD = this.value / 100; vc.textContent = this.value + '%'; });
+
+    var ss = document.getElementById('sliderStable');
+    var vs = document.getElementById('valStable');
+    ss.addEventListener('input', function () { CONFIG.STABLE_DURATION = +this.value; vs.textContent = (+this.value / 1000).toFixed(1) + 's'; });
+
+    var sd = document.getElementById('sliderDup');
+    var vd = document.getElementById('valDup');
+    sd.addEventListener('input', function () { CONFIG.DUPLICATE_THRESHOLD = this.value / 100; vd.textContent = this.value + '%'; });
   }
 
   // ── 导出 ──────────────────────────────────────────────
 
   async function exportImages() {
-    if (captures.length === 0) return;
-
+    if (!captures.length) return;
     $btnExport.disabled = true;
     $btnExport.textContent = '⏳ 打包中...';
-
     try {
       if (typeof JSZip !== 'undefined') {
         var zip = new JSZip();
         var folder = zip.folder('scanned_docs');
-        for (var i = 0; i < captures.length; i++) {
-          var base64 = captures[i].split(',')[1];
-          folder.file('page_' + String(i + 1).padStart(3, '0') + '.jpg', base64, { base64: true });
-        }
+        captures.forEach(function (d, i) {
+          folder.file('page_' + String(i + 1).padStart(3, '0') + '.jpg', d.split(',')[1], { base64: true });
+        });
         var blob = await zip.generateAsync({ type: 'blob' });
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a');
         a.href = url;
         a.download = '扫描文档_' + new Date().toISOString().slice(0, 10) + '.zip';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
         URL.revokeObjectURL(url);
       } else {
-        // JSZip 未加载则逐张下载
-        for (var i = 0; i < captures.length; i++) {
+        captures.forEach(function (d, i) {
           var a = document.createElement('a');
-          a.href = captures[i];
-          a.download = 'page_' + String(i + 1).padStart(3, '0') + '.jpg';
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-        }
+          a.href = d; a.download = 'page_' + String(i + 1).padStart(3, '0') + '.jpg';
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        });
       }
-    } catch (e) {
-      alert('导出失败: ' + e.message);
-    }
-
+    } catch (e) { alert('导出失败: ' + e.message); }
     $btnExport.disabled = false;
     $btnExport.textContent = '📥 导出';
   }
 
   function clearAll() {
     if (!confirm('确定清空所有抓拍？')) return;
-    captures = [];
-    lastCapturedData = null;
+    captures = []; lastCapturedData = null;
     $captureCount.textContent = '0';
-    $btnExport.disabled = true;
-    $btnClear.disabled = true;
+    $btnExport.disabled = true; $btnClear.disabled = true;
     $thumbBar.querySelectorAll('.thumb-item').forEach(function (el) { el.remove(); });
     $thumbEmpty.style.display = '';
   }
 
-  // ── 设置面板 ──────────────────────────────────────────
-
-  function toggleSettings() {
-    var panel = document.getElementById('settingsPanel');
-    var btn = document.getElementById('btnSettings');
-    var isOpen = panel.classList.contains('open');
-    panel.classList.toggle('open');
-    btn.style.background = isOpen ? '' : 'rgba(0,212,255,0.2)';
-  }
-
-  function initSliders() {
-    // 翻页触发灵敏度 → CHANGE_THRESHOLD
-    var sliderChange = document.getElementById('sliderChange');
-    var valChange = document.getElementById('valChange');
-    sliderChange.addEventListener('input', function () {
-      var v = parseInt(this.value);
-      CONFIG.CHANGE_THRESHOLD = v / 100;
-      valChange.textContent = v + '%';
-    });
-
-    // 稳定等待时长 → STABLE_DURATION
-    var sliderStable = document.getElementById('sliderStable');
-    var valStable = document.getElementById('valStable');
-    sliderStable.addEventListener('input', function () {
-      var v = parseInt(this.value);
-      CONFIG.STABLE_DURATION = v;
-      valStable.textContent = (v / 1000).toFixed(1) + 's';
-    });
-
-    // 去重阈值 → DUPLICATE_THRESHOLD
-    var sliderDup = document.getElementById('sliderDup');
-    var valDup = document.getElementById('valDup');
-    sliderDup.addEventListener('input', function () {
-      var v = parseInt(this.value);
-      CONFIG.DUPLICATE_THRESHOLD = v / 100;
-      valDup.textContent = v + '%';
-    });
-  }
-
-  // ── 文档边框 overlay ─────────────────────────────────
+  // ── Overlay ───────────────────────────────────────────
 
   function drawDocumentOverlay() {
     try {
       var corners = DocScanner.detectCorners(processCanvas);
       if (!corners || corners.length !== 4) return;
-
-      overlayCtx.strokeStyle = 'rgba(0, 212, 255, 0.75)';
+      overlayCtx.strokeStyle = 'rgba(0,212,255,0.75)';
       overlayCtx.lineWidth = 3;
       overlayCtx.setLineDash([8, 4]);
       overlayCtx.beginPath();
@@ -607,17 +567,16 @@
       overlayCtx.closePath();
       overlayCtx.stroke();
       overlayCtx.setLineDash([]);
-
-      for (var i = 0; i < 4; i++) {
-        overlayCtx.fillStyle = 'rgba(0, 212, 255, 0.9)';
+      corners.forEach(function (c) {
+        overlayCtx.fillStyle = 'rgba(0,212,255,0.9)';
         overlayCtx.beginPath();
-        overlayCtx.arc(corners[i].x, corners[i].y, 6, 0, Math.PI * 2);
+        overlayCtx.arc(c.x, c.y, 6, 0, Math.PI * 2);
         overlayCtx.fill();
-      }
+      });
     } catch (_) {}
   }
 
-  // ── 页面可见性 / SW ───────────────────────────────────
+  // ── SW 更新提示 ───────────────────────────────────────
 
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'visible' && running) requestWakeLock();
@@ -625,38 +584,24 @@
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').then(function (reg) {
-      // 检测到新 SW 安装完成时，提示用户刷新
       reg.addEventListener('updatefound', function () {
-        var newWorker = reg.installing;
-        newWorker.addEventListener('statechange', function () {
-          if (newWorker.state === 'activated' && navigator.serviceWorker.controller) {
-            showUpdateBanner();
-          }
+        var nw = reg.installing;
+        nw.addEventListener('statechange', function () {
+          if (nw.state === 'activated' && navigator.serviceWorker.controller) showUpdateBanner();
         });
       });
     }).catch(function () {});
-
-    // 新 SW claim 后页面会收到 controllerchange，也触发提示
-    navigator.serviceWorker.addEventListener('controllerchange', function () {
-      showUpdateBanner();
-    });
+    navigator.serviceWorker.addEventListener('controllerchange', function () { showUpdateBanner(); });
   }
 
   function showUpdateBanner() {
-    // 避免重复弹
     if (document.getElementById('updateBanner')) return;
-    var banner = document.createElement('div');
-    banner.id = 'updateBanner';
-    banner.style.cssText = [
-      'position:fixed;bottom:90px;left:50%;transform:translateX(-50%)',
-      'background:#00d4ff;color:#0f0f1a;padding:10px 20px',
-      'border-radius:50px;font-size:13px;font-weight:600',
-      'z-index:999;cursor:pointer;box-shadow:0 4px 16px rgba(0,212,255,0.4)',
-      'white-space:nowrap',
-    ].join(';');
-    banner.textContent = '有新版本，点击刷新';
-    banner.addEventListener('click', function () { location.reload(); });
-    document.body.appendChild(banner);
+    var b = document.createElement('div');
+    b.id = 'updateBanner';
+    b.style.cssText = 'position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:#00d4ff;color:#0f0f1a;padding:10px 20px;border-radius:50px;font-size:13px;font-weight:600;z-index:999;cursor:pointer;box-shadow:0 4px 16px rgba(0,212,255,0.4);white-space:nowrap';
+    b.textContent = '有新版本，点击刷新';
+    b.addEventListener('click', function () { location.reload(); });
+    document.body.appendChild(b);
   }
 
 })();
