@@ -580,7 +580,39 @@
   });
 
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(function () {});
+    navigator.serviceWorker.register('sw.js').then(function (reg) {
+      // 检测到新 SW 安装完成时，提示用户刷新
+      reg.addEventListener('updatefound', function () {
+        var newWorker = reg.installing;
+        newWorker.addEventListener('statechange', function () {
+          if (newWorker.state === 'activated' && navigator.serviceWorker.controller) {
+            showUpdateBanner();
+          }
+        });
+      });
+    }).catch(function () {});
+
+    // 新 SW claim 后页面会收到 controllerchange，也触发提示
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      showUpdateBanner();
+    });
+  }
+
+  function showUpdateBanner() {
+    // 避免重复弹
+    if (document.getElementById('updateBanner')) return;
+    var banner = document.createElement('div');
+    banner.id = 'updateBanner';
+    banner.style.cssText = [
+      'position:fixed;bottom:90px;left:50%;transform:translateX(-50%)',
+      'background:#00d4ff;color:#0f0f1a;padding:10px 20px',
+      'border-radius:50px;font-size:13px;font-weight:600',
+      'z-index:999;cursor:pointer;box-shadow:0 4px 16px rgba(0,212,255,0.4)',
+      'white-space:nowrap',
+    ].join(';');
+    banner.textContent = '有新版本，点击刷新';
+    banner.addEventListener('click', function () { location.reload(); });
+    document.body.appendChild(banner);
   }
 
 })();
