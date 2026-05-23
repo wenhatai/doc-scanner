@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  var VERSION = 'v1.6.0';
+  var VERSION = 'v1.7.0';
 
   var CONFIG = {
     FRAME_INTERVAL: 100,
@@ -51,6 +51,9 @@
   var lastProcessTime = 0;
   var lastOverlayTime = 0;
   var selectedRes = null;    // { w, h, label } 用户选择的分辨率，null = 原生默认
+  var selectedDeviceId = null; // 用户选择的摄像头 deviceId
+  var availableCameras = []; // 所有后置摄像头列表 [{deviceId, label}]
+  var currentTrack = null;
   var currentStream = null;
 
   var video        = document.getElementById('video');
@@ -81,6 +84,8 @@
   $btnExport.addEventListener('click', exportImages);
   $btnClear.addEventListener('click', clearAll);
   document.getElementById('btnSettings').addEventListener('click', toggleSettings);
+  document.getElementById('btnDiag').addEventListener('click', openDiagnostic);
+  document.getElementById('btnDiagClose').addEventListener('click', closeDiagnostic);
   initSliders();
 
   // 页面加载后立即探测支持的分辨率
@@ -204,12 +209,18 @@
     if (currentStream) {
       currentStream.getTracks().forEach(function (t) { t.stop(); });
       currentStream = null;
+      currentTrack = null;
     }
 
-    var videoConstraints = { facingMode: { ideal: 'environment' } };
+    var videoConstraints;
+    if (selectedDeviceId) {
+      // 优先用 deviceId（精确指定摄像头）
+      videoConstraints = { deviceId: { exact: selectedDeviceId } };
+    } else {
+      videoConstraints = { facingMode: { ideal: 'environment' } };
+    }
 
     if (selectedRes) {
-      // 用 ideal 让浏览器就近匹配，避免 exact 在不支持该分辨率时抛出 OverconstrainedError
       videoConstraints.width  = { ideal: selectedRes.w };
       videoConstraints.height = { ideal: selectedRes.h };
     }
@@ -217,12 +228,21 @@
     var stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
     currentStream = stream;
     var track = stream.getVideoTracks()[0];
+    currentTrack = track;
 
-    // 持续对焦（iOS Safari 17+ 自动处理微距，Android 看厂商）
+    // 持续对焦 + 重置 zoom 到最小值（解决"看起来焦距大"问题的关键）
     try {
       var caps = track.getCapabilities ? track.getCapabilities() : {};
+      var advanced = [];
       if (caps.focusMode && caps.focusMode.indexOf('continuous') !== -1) {
-        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+        advanced.push({ focusMode: 'continuous' });
+      }
+      // 关键：把 zoom 强制重置为最小值（很多手机默认 zoom > 1）
+      if (caps.zoom && typeof caps.zoom.min === 'number') {
+        advanced.push({ zoom: caps.zoom.min });
+      }
+      if (advanced.length > 0) {
+        await track.applyConstraints({ advanced: advanced });
       }
     } catch (_) {}
 
@@ -239,6 +259,140 @@
     var lbl = (track.label || '').substring(0, 28);
     var camInfo = document.getElementById('camInfo');
     if (camInfo) camInfo.textContent = w + '×' + h + (lbl ? '  ' + lbl : '');
+  }
+
+  // ── 诊断面板 ──────────────────────────────────────────
+
+  async function openDiagnostic() {
+    var panel = document.getElementById('diagPanel');
+    panel.style.display = 'block';
+    await renderDiagnostic();
+  }
+
+  function closeDiagnostic() {
+    document.getElementById('diagPanel').style.display = 'none';
+  }
+
+  async function renderDiagnostic() {
+    var camList = document.getElementById('diagCamList');
+    var diagText = document.getElementById('diagText');
+    var zoomRow = document.getElementById('diagZoomRow');
+    var zoomNone = document.getElementById('diagZoomNone');
+    var zoomSlider = document.getElementById('diagZoomSlider');
+    var zoomVal = document.getElementById('diagZoomVal');
+    var zoomRange = document.getElementById('diagZoomRange');
+
+    // 1. 列出所有摄像头
+    camList.innerHTML = '正在枚举设备...';
+    try {
+      var devices = await navigator.mediaDevices.enumerateDevices();
+      availableCameras = devices.filter(function (d) { return d.kind === 'videoinput'; });
+    } catch (e) {
+      availableCameras = [];
+    }
+
+    camList.innerHTML = '';
+    var currentDeviceId = '';
+    if (currentTrack) {
+      var s = currentTrack.getSettings ? currentTrack.getSettings() : {};
+      currentDeviceId = s.deviceId || '';
+    }
+    if (availableCameras.length === 0) {
+      camList.innerHTML = '<div style="color:#f99;font-size:12px;">未检测到摄像头（可能需要先授权）</div>';
+    } else {
+      availableCameras.forEach(function (cam, idx) {
+        var btn = document.createElement('button');
+        var isActive = cam.deviceId === currentDeviceId;
+        btn.style.cssText = 'text-align:left;padding:10px 12px;border-radius:8px;border:1.5px solid ' +
+          (isActive ? 'var(--accent)' : 'var(--border)') +
+          ';background:' + (isActive ? 'rgba(0,212,255,0.1)' : 'rgba(255,255,255,0.04)') +
+          ';color:#fff;font-size:12px;cursor:pointer;';
+        btn.innerHTML = '<div style="font-weight:600;">📷 摄像头 #' + (idx + 1) +
+          (isActive ? ' <span style="color:var(--accent);">[当前]</span>' : '') + '</div>' +
+          '<div style="font-size:11px;color:#aaa;margin-top:2px;word-break:break-all;">' +
+          (cam.label || '(无标签，需先授权)') + '</div>' +
+          '<div style="font-size:10px;color:#666;margin-top:2px;">' + cam.deviceId.substring(0, 24) + '...</div>';
+        btn.addEventListener('click', async function () {
+          if (cam.deviceId === currentDeviceId) return;
+          selectedDeviceId = cam.deviceId;
+          try {
+            await startCamera();
+            await renderDiagnostic(); // 重新渲染
+          } catch (err) {
+            alert('切换摄像头失败: ' + err.message);
+          }
+        });
+        camList.appendChild(btn);
+      });
+    }
+
+    // 2. zoom 控制
+    var caps = currentTrack && currentTrack.getCapabilities ? currentTrack.getCapabilities() : {};
+    var settings = currentTrack && currentTrack.getSettings ? currentTrack.getSettings() : {};
+    if (caps.zoom && typeof caps.zoom.min === 'number') {
+      zoomRow.style.display = 'block';
+      zoomNone.style.display = 'none';
+      zoomSlider.min = caps.zoom.min;
+      zoomSlider.max = caps.zoom.max;
+      zoomSlider.step = caps.zoom.step || 0.1;
+      zoomSlider.value = settings.zoom || caps.zoom.min;
+      zoomVal.textContent = (settings.zoom || caps.zoom.min).toFixed(1);
+      zoomRange.textContent = 'min: ' + caps.zoom.min + ' / max: ' + caps.zoom.max;
+      zoomSlider.oninput = async function () {
+        zoomVal.textContent = parseFloat(this.value).toFixed(1);
+        try {
+          await currentTrack.applyConstraints({ advanced: [{ zoom: parseFloat(this.value) }] });
+        } catch (e) {}
+      };
+    } else {
+      zoomRow.style.display = 'none';
+      zoomNone.style.display = 'block';
+    }
+
+    // 3. 完整诊断文本
+    var ua = navigator.userAgent;
+    var screenInfo = screen.width + '×' + screen.height + ' DPR=' + (window.devicePixelRatio || 1);
+    var videoElInfo = video.videoWidth + '×' + video.videoHeight +
+      ' (CSS渲染: ' + Math.round(video.clientWidth) + '×' + Math.round(video.clientHeight) + ')';
+
+    var lines = [];
+    lines.push('═══ 环境 ═══');
+    lines.push('UA: ' + ua);
+    lines.push('屏幕: ' + screenInfo);
+    lines.push('');
+    lines.push('═══ 当前摄像头 ═══');
+    lines.push('label: ' + (currentTrack ? currentTrack.label : '(未启动)'));
+    lines.push('');
+    lines.push('═══ getSettings() ═══');
+    lines.push(JSON.stringify(settings, null, 2));
+    lines.push('');
+    lines.push('═══ getCapabilities() ═══');
+    lines.push(JSON.stringify(caps, null, 2));
+    lines.push('');
+    lines.push('═══ video 元素 ═══');
+    lines.push('videoWidth × videoHeight: ' + videoElInfo);
+    lines.push('object-fit: ' + (window.getComputedStyle(video).objectFit));
+    lines.push('');
+    lines.push('═══ 🚨 关键检查 ═══');
+    var sw = settings.width, sh = settings.height;
+    var vw = video.videoWidth, vh = video.videoHeight;
+    if (sw && vw && sw !== vw) {
+      lines.push('⚠️ settings.width(' + sw + ') ≠ videoWidth(' + vw + ')，画面可能被裁切');
+    } else {
+      lines.push('✅ settings 和 video 元素分辨率一致');
+    }
+    if (settings.zoom && settings.zoom > 1) {
+      lines.push('⚠️ 当前 zoom = ' + settings.zoom + '（>1 会有变焦效果，试试设为 1）');
+    } else if (settings.zoom) {
+      lines.push('✅ zoom = ' + settings.zoom);
+    } else {
+      lines.push('ℹ️ 摄像头不报告 zoom 字段');
+    }
+    if (caps.zoom) {
+      lines.push('   可调范围: ' + caps.zoom.min + ' ~ ' + caps.zoom.max);
+    }
+
+    diagText.textContent = lines.join('\n');
   }
 
   // ── OpenCV 异步加载 ───────────────────────────────────
