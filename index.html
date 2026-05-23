@@ -57,6 +57,15 @@
     .res-opt span small { font-size:10px; font-weight:400; opacity:0.6; }
     .res-opt input:checked + span { border-color:var(--accent); color:var(--accent); background:rgba(0,212,255,0.08); }
 
+    .cam-opt {
+      display:block; padding:9px 12px; border-radius:8px; cursor:pointer;
+      border:1.5px solid var(--border); background:rgba(255,255,255,0.04);
+      font-size:12px; color:var(--text); transition:all 0.15s;
+    }
+    .cam-opt.active { border-color:var(--accent); background:rgba(0,212,255,0.1); color:var(--accent); }
+    .cam-opt .cam-tag { font-size:10px; opacity:0.7; margin-left:6px; }
+    .cam-opt input { display:none; }
+
     /* ── Start Button ── */
     .btn-start {
       padding:15px 44px; font-size:17px; font-weight:600; color:var(--bg);
@@ -166,15 +175,21 @@
     <h1>文档自动扫描</h1>
     <p>将手机固定在支架上，翻阅资料时自动抓拍每一页</p>
 
+    <div id="camPicker" style="width:100%;max-width:340px;">
+      <div class="res-title">选择摄像头</div>
+      <div id="camLoading" style="font-size:12px;color:var(--accent);text-align:center;">正在检测摄像头...</div>
+      <div id="camList" style="display:none;flex-direction:column;gap:6px;max-height:160px;overflow-y:auto;"></div>
+    </div>
+
     <div id="resPicker">
       <div class="res-title">选择拍摄分辨率</div>
-      <div id="resLoading">正在检测摄像头支持的分辨率...</div>
+      <div id="resLoading">正在检测分辨率...</div>
       <div id="resGrid" style="display:none"></div>
       <div id="resHint"></div>
     </div>
 
     <button class="btn-start" id="btnStart" disabled>开始扫描</button>
-    <div class="version">v1.7.0</div>
+    <div class="version">v1.8.0</div>
   </div>
 
   <!-- Loading -->

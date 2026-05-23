@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  var VERSION = 'v1.7.0';
+  var VERSION = 'v1.8.0';
 
   var CONFIG = {
     FRAME_INTERVAL: 100,
@@ -88,10 +88,106 @@
   document.getElementById('btnDiagClose').addEventListener('click', closeDiagnostic);
   initSliders();
 
-  // 页面加载后立即探测支持的分辨率
-  probeResolutions();
+  // 页面加载后先探测摄像头，再探测分辨率
+  initStartScreen();
 
-  // ── 分辨率检测（用 getCapabilities，无需逐个探测）────────
+  async function initStartScreen() {
+    await probeCameras();
+    await probeResolutions();
+  }
+
+  // ── 摄像头列表检测 ────────────────────────────────────
+
+  async function probeCameras() {
+    var camLoading = document.getElementById('camLoading');
+    var camListEl  = document.getElementById('camList');
+
+    // 必须先 getUserMedia 拿到权限，否则 enumerateDevices 不返回 label
+    try {
+      var tmpStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+      tmpStream.getTracks().forEach(function (t) { t.stop(); });
+    } catch (e) {
+      camLoading.textContent = '摄像头权限被拒绝：' + e.message;
+      return;
+    }
+
+    var devices;
+    try {
+      devices = await navigator.mediaDevices.enumerateDevices();
+    } catch (e) {
+      camLoading.textContent = '枚举设备失败：' + e.message;
+      return;
+    }
+    var cams = devices.filter(function (d) { return d.kind === 'videoinput'; });
+
+    // 过滤后置摄像头（排除明显的前置：含 "front"/"user"/"自拍" 等）
+    var backCams = cams.filter(function (c) {
+      var l = (c.label || '').toLowerCase();
+      if (!l) return true; // 无 label 时保留（iOS Safari 常见）
+      return !/front|user|face|facetime|自拍|前置/.test(l);
+    });
+    if (backCams.length === 0) backCams = cams;
+
+    availableCameras = backCams;
+
+    if (backCams.length <= 1) {
+      // 只有 1 个摄像头时不展示选择器（避免占空间）
+      camLoading.style.display = 'none';
+      document.getElementById('camPicker').style.display = 'none';
+      if (backCams.length === 1) selectedDeviceId = backCams[0].deviceId;
+      return;
+    }
+
+    // 优先默认选中"广角"摄像头（label 含 wide/超广角 等）
+    var defaultIdx = 0;
+    for (var i = 0; i < backCams.length; i++) {
+      var lbl = (backCams[i].label || '').toLowerCase();
+      if (/ultra.?wide|wide|超广|广角/.test(lbl)) {
+        defaultIdx = i;
+        break;
+      }
+    }
+    selectedDeviceId = backCams[defaultIdx].deviceId;
+
+    camLoading.style.display = 'none';
+    camListEl.style.display = 'flex';
+    camListEl.innerHTML = '';
+
+    backCams.forEach(function (cam, idx) {
+      var div = document.createElement('div');
+      div.className = 'cam-opt' + (idx === defaultIdx ? ' active' : '');
+      var lbl = cam.label || ('摄像头 ' + (idx + 1));
+      // 自动识别类型标签
+      var lblLow = lbl.toLowerCase();
+      var tag = '';
+      if (/ultra.?wide|超广/.test(lblLow))      tag = '超广角';
+      else if (/wide|广角/.test(lblLow))         tag = '广角';
+      else if (/tele|长焦/.test(lblLow))         tag = '长焦';
+      else if (/macro|微距/.test(lblLow))        tag = '微距';
+      else if (/depth|深度/.test(lblLow))        tag = '深度';
+      div.innerHTML = '<span>📷 ' + lbl + '</span>' +
+                      (tag ? '<span class="cam-tag">[' + tag + ' · 推荐]</span>' : '');
+      div.addEventListener('click', function () {
+        selectedDeviceId = cam.deviceId;
+        document.querySelectorAll('.cam-opt').forEach(function (x) { x.classList.remove('active'); });
+        div.classList.add('active');
+        // 切换摄像头后重新探测分辨率
+        var resGrid = document.getElementById('resGrid');
+        var resLoading = document.getElementById('resLoading');
+        resGrid.innerHTML = '';
+        resGrid.style.display = 'none';
+        resLoading.style.display = '';
+        resLoading.textContent = '正在重新检测分辨率...';
+        probeResolutions();
+      });
+      camListEl.appendChild(div);
+    });
+  }
+
+  // ── 分辨率检测（基于已选 deviceId）────────────────────────
 
   async function probeResolutions() {
     var resLoading = document.getElementById('resLoading');
@@ -99,13 +195,13 @@
     var resHint    = document.getElementById('resHint');
     var btnStart   = document.getElementById('btnStart');
 
-    // 请求一次摄像头权限，读取 getCapabilities()，然后立即关掉
+    // 用已选 deviceId 拿权限，读 capabilities
+    var vc = selectedDeviceId
+      ? { deviceId: { exact: selectedDeviceId } }
+      : { facingMode: { ideal: 'environment' } };
     var stream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } },
-        audio: false,
-      });
+      stream = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
     } catch (e) {
       resLoading.textContent = '摄像头权限被拒绝：' + e.message;
       return;
