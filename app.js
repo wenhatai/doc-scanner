@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  var VERSION = 'v1.9.0';
+  var VERSION = 'v1.10.0';
 
   // ── 持久化存储 ─────────────────────────────────────────
   // captures 用 IndexedDB（图片 blob 可能较大）
@@ -90,7 +90,7 @@
     STABLE_THRESHOLD: 0.04,
     DUPLICATE_THRESHOLD: 0.05,
     COMPARE_SIZE: 100,
-    OPENCV_LOAD_TIMEOUT: 30000,
+
   };
 
   // 固定标准档位列表（按像素数从高到低），启动时用 ideal 就近匹配
@@ -111,12 +111,6 @@
 
   var STATE = { IDLE: 'idle', TURNING: 'turning', PAUSED: 'paused' };
 
-  var OPENCV_MIRRORS = [
-    'https://docs.opencv.org/4.9.0/opencv.js',
-    'https://cdn.bootcdn.net/ajax/libs/opencv.js/4.9.0/opencv.js',
-    'https://cdn.staticfile.net/opencv.js/4.9.0/opencv.js',
-  ];
-
   var currentState = STATE.IDLE;
   var stableStart = 0;
   var lastFrameData = null;
@@ -125,10 +119,7 @@
   var paused = false;
   var running = false;
   var wakeLock = null;
-  var cvReady = false;
-  var cvLoading = false;
   var lastProcessTime = 0;
-  var lastOverlayTime = 0;
   var selectedRes = null;    // { w, h, label } 用户选择的分辨率，null = 原生默认
   var selectedDeviceId = null; // 用户选择的摄像头 deviceId
   var availableCameras = []; // 所有后置摄像头列表 [{deviceId, label}]
@@ -407,7 +398,7 @@
       $loading.classList.remove('show');
       requestWakeLock();
       startDetectionLoop();
-      loadOpenCVAsync();
+
     } catch (err) {
       $loading.classList.remove('show');
       alert('摄像头启动失败: ' + err.message);
@@ -607,52 +598,6 @@
     diagText.textContent = lines.join('\n');
   }
 
-  // ── OpenCV 异步加载 ───────────────────────────────────
-
-  function loadOpenCVAsync() {
-    if (typeof cv !== 'undefined' && cv.Mat) { cvReady = true; updateStatusUI('idle', '智能矫正已就绪'); return; }
-    if (cvLoading) return;
-    cvLoading = true;
-
-    loadScriptFromMirrors(OPENCV_MIRRORS)
-      .then(function () { return waitForOpenCVReady(); })
-      .then(function () { cvReady = true; cvLoading = false; updateStatusUI('idle', '智能矫正已就绪'); })
-      .catch(function (e) { cvLoading = false; console.warn('OpenCV 加载失败:', e); updateStatusUI('idle', '基础模式（无自动矫正）'); });
-  }
-
-  function loadScriptFromMirrors(urls) {
-    return new Promise(function (resolve, reject) {
-      var idx = 0;
-      function tryNext() {
-        if (idx >= urls.length) { reject(new Error('所有镜像均失败')); return; }
-        var url = urls[idx++];
-        var s = document.createElement('script');
-        s.src = url; s.async = true;
-        var timer = setTimeout(function () { cleanup(); tryNext(); }, CONFIG.OPENCV_LOAD_TIMEOUT);
-        function cleanup() { clearTimeout(timer); s.onload = s.onerror = null; if (s.parentNode) s.parentNode.removeChild(s); }
-        s.onload = function () { cleanup(); resolve(); };
-        s.onerror = function () { cleanup(); tryNext(); };
-        document.head.appendChild(s);
-      }
-      tryNext();
-    });
-  }
-
-  function waitForOpenCVReady() {
-    return new Promise(function (resolve, reject) {
-      if (typeof cv !== 'undefined' && cv.Mat) { resolve(); return; }
-      var done = false;
-      var timeout = setTimeout(function () { if (!done) { done = true; clearInterval(poll); reject(new Error('超时')); } }, 60000);
-      var poll = setInterval(function () {
-        if (typeof cv !== 'undefined' && cv.Mat) { if (!done) { done = true; clearInterval(poll); clearTimeout(timeout); resolve(); } }
-      }, 200);
-      if (typeof cv !== 'undefined') {
-        var orig = cv.onRuntimeInitialized;
-        cv.onRuntimeInitialized = function () { if (orig) orig(); if (!done) { done = true; clearInterval(poll); clearTimeout(timeout); resolve(); } };
-      }
-    });
-  }
-
   // ── 防息屏 ────────────────────────────────────────────
 
   async function requestWakeLock() {
@@ -713,13 +658,9 @@
       }
     } else {
       currentState = STATE.IDLE;
-      updateStatusUI('idle', cvLoading ? '矫正引擎加载中...' : '等待翻页...');
+      updateStatusUI('idle', '等待翻页...');
     }
 
-    if (cvReady && timestamp - lastOverlayTime >= CONFIG.OVERLAY_INTERVAL) {
-      lastOverlayTime = timestamp;
-      drawDocumentOverlay();
-    }
   }
 
   // ── 帧差分 ────────────────────────────────────────────
@@ -743,17 +684,9 @@
     captureCanvas.height = h;
     captureCtx.putImageData(frameData, 0, 0);
 
-    var sourceCanvas = captureCanvas;
-    if (cvReady) {
-      try {
-        var corrected = DocScanner.detectAndCorrectCanvas(captureCanvas);
-        if (corrected) sourceCanvas = corrected;
-      } catch (e) { console.warn('矫正失败:', e); }
-    }
+    if (isDuplicate(captureCanvas)) { updateStatusUI('idle', '重复页面，已跳过'); return; }
 
-    if (isDuplicate(sourceCanvas)) { updateStatusUI('idle', '重复页面，已跳过'); return; }
-
-    addCapture(sourceCanvas.toDataURL('image/jpeg', 0.92));
+    addCapture(captureCanvas.toDataURL('image/jpeg', 0.92));
     flashEffect();
     updateStatusUI('idle', '已抓拍！');
   }
@@ -945,30 +878,6 @@
     $btnExport.disabled = true; $btnClear.disabled = true;
     $thumbBar.querySelectorAll('.thumb-item').forEach(function (el) { el.remove(); });
     $thumbEmpty.style.display = '';
-  }
-
-  // ── Overlay ───────────────────────────────────────────
-
-  function drawDocumentOverlay() {
-    try {
-      var corners = DocScanner.detectCorners(processCanvas);
-      if (!corners || corners.length !== 4) return;
-      overlayCtx.strokeStyle = 'rgba(0,212,255,0.75)';
-      overlayCtx.lineWidth = 3;
-      overlayCtx.setLineDash([8, 4]);
-      overlayCtx.beginPath();
-      overlayCtx.moveTo(corners[0].x, corners[0].y);
-      for (var i = 1; i < 4; i++) overlayCtx.lineTo(corners[i].x, corners[i].y);
-      overlayCtx.closePath();
-      overlayCtx.stroke();
-      overlayCtx.setLineDash([]);
-      corners.forEach(function (c) {
-        overlayCtx.fillStyle = 'rgba(0,212,255,0.9)';
-        overlayCtx.beginPath();
-        overlayCtx.arc(c.x, c.y, 6, 0, Math.PI * 2);
-        overlayCtx.fill();
-      });
-    } catch (_) {}
   }
 
   // ── SW 更新提示 ───────────────────────────────────────
